@@ -1,0 +1,32 @@
+{
+  "name": "idlerpg",
+  "version": "0.1.0",
+  "description": "generic implementation of IdleRPG",
+  "main": "lib/idlerpg.js",
+  "scripts": {
+    "test": "mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/martindale/idlerpg.git"
+  },
+  "keywords": [
+    "idlerpg",
+    "rpg",
+    "game",
+    "chat",
+    "chatbot"
+  ],
+  "author": "Fabric Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/martindale/idlerpg/issues"
+  },
+  "homepage": "https://github.com/martindale/idlerpg#readme",
+  "dependencies": {
+    "level": "^3.0.0"
+  },
+  "devDependencies": {
+    "mocha": "^5.1.0"
+  }
+}
