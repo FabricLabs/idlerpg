@@ -1,0 +1,2 @@
+# idlerpg
+generic IdleRPG implementation
