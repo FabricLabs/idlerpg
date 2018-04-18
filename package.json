@@ -4,7 +4,8 @@
   "description": "generic implementation of IdleRPG",
   "main": "lib/idlerpg.js",
   "scripts": {
-    "test": "mocha"
+    "test": "mocha",
+    "coverage": "istanbul cover _mocha"
   },
   "repository": {
     "type": "git",
@@ -25,6 +26,7 @@
     "level": "^3.0.0"
   },
   "devDependencies": {
+    "istanbul": "^0.4.5",
     "mocha": "^5.1.0"
   }
 }
