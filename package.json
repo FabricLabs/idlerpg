@@ -23,6 +23,8 @@
   },
   "homepage": "https://github.com/martindale/idlerpg#readme",
   "dependencies": {
+    "fast-json-patch": "^2.0.6",
+    "indefinite-article": "0.0.2",
     "level": "^3.0.0"
   },
   "devDependencies": {

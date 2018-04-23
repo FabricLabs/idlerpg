@@ -1,0 +1,5 @@
+[
+  { "name": "common", "weight": 10 },
+  { "name": "generic", "weight": 10 },
+  { "name": "average", "weight": 10 }
+]
