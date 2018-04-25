@@ -1,0 +1,9 @@
+[
+  { "name": "goblin", "attack": 4, "speed": 4 },
+  { "name": "hobgoblin", "attack": 6, "speed": 3 },
+  { "name": "kobold", "attack": 3, "speed": 6 },
+  { "name": "ogre", "attack": 8, "speed": 2 },
+  { "name": "orc", "attack": 7, "speed": 4 },
+  { "name": "troll", "attack": 10, "speed": 1 },
+  { "name": "spirit", "attack": 3, "speed": 10 }
+]

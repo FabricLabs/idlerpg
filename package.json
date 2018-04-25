@@ -1,0 +1,35 @@
+{
+  "name": "idlerpg",
+  "version": "0.0.0",
+  "description": "generic implementation of IdleRPG",
+  "main": "lib/idlerpg.js",
+  "scripts": {
+    "test": "mocha",
+    "coverage": "istanbul cover _mocha"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/martindale/idlerpg.git"
+  },
+  "keywords": [
+    "idlerpg",
+    "rpg",
+    "game"
+  ],
+  "author": "Fabric Labs",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/martindale/idlerpg/issues"
+  },
+  "homepage": "https://github.com/martindale/idlerpg#readme",
+  "dependencies": {
+    "fast-json-patch": "^2.0.6",
+    "indefinite-article": "0.0.2",
+    "level": "^3.0.0",
+    "mkdirpsync": "^0.1.0"
+  },
+  "devDependencies": {
+    "istanbul": "^0.4.5",
+    "mocha": "^5.1.0"
+  }
+}
