@@ -9,17 +9,23 @@ async function main () {
   // when the game's internal state changes, log some details to the console
   game.on('patches', async function (patches) {
     console.log('game state changed:', patches);
-    console.log('game state:', game.state);
-    console.log('Poor Yorick:', game.state.local.users[name]);
+    console.log('Poor Yorick is now:', await game._getProfile('local/users/Yorick'));
     // this.fabric.applyPatches(patches);
   });
 
   // when the game starts, add player and emulate some behavior
   game.on('ready', function () {
-    // configure local service
-    game.fabric.emit('service', { name: 'local' });
+    // trust state modifications from ourselves
+    game.fabric.trust(game);
 
-    // add a player to the game
+    // emit a user, as if it came from an external source
+    game.fabric.emit('user', {
+      id: name,
+      name: name
+    });
+
+    // add a player to the game (same username as we provided before)
+    // note that this emulates a Doorman "join" event
     game.fabric.emit('join', {
       user: name,
       channel: 'idlerpg'
@@ -38,6 +44,7 @@ async function main () {
     }, 12000);
   });
 
+  // start the game
   return game.start();
 }
 

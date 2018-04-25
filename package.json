@@ -1,11 +1,12 @@
 {
   "name": "idlerpg",
-  "version": "0.0.0",
-  "description": "generic implementation of IdleRPG",
+  "version": "0.1.0",
+  "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
   "main": "lib/idlerpg.js",
   "scripts": {
     "test": "mocha",
-    "coverage": "istanbul cover _mocha"
+    "coverage": "istanbul cover _mocha",
+    "make:docs": "jsdoc lib README.md -d docs"
   },
   "repository": {
     "type": "git",
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "istanbul": "^0.4.5",
+    "jsdoc": "^3.5.5",
     "mocha": "^5.1.0"
   }
 }
