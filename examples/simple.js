@@ -11,7 +11,11 @@ async function main () {
     console.log('game state changed:', patches);
     console.log('game state:', game.state);
     console.log('Poor Yorick:', game.state.local.users[name]);
-    // this.fabric.applyPatches(patches);
+    game.fabric.applyPatches(patches);
+  });
+
+  game.on('message', function (msg) {
+    console.log('[MESSAGE]', msg);
   });
 
   // when the game starts, add player and emulate some behavior
