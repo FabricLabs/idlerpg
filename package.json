@@ -1,6 +1,6 @@
 {
   "name": "idlerpg",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "generic implementation of IdleRPG",
   "main": "lib/idlerpg.js",
   "scripts": {
