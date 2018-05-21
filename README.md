@@ -21,7 +21,7 @@ Running IdleRPG on its own:
 4. `node examples/simple.js`
 
 ## Examples
-The simplest way to see IdleRPG in action is to join [#idlerpg:verse.im][chat],
+The simplest way to see IdleRPG in action is to join [`#idlerpg:verse.im`][chat],
 which will automatically join you into the official public game session.  This
 channel is powered by [`idlerpg-bot`][bot], a pre-configured bot for Discord,
 Matrix, and Slack.
