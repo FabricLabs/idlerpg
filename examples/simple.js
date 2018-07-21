@@ -9,8 +9,13 @@ async function main () {
   // when the game's internal state changes, log some details to the console
   game.on('patches', async function (patches) {
     console.log('game state changed:', patches);
-    console.log('Poor Yorick is now:', await game._getProfile('local/users/Yorick'));
-    // this.fabric.applyPatches(patches);
+    console.log('game state:', game.state);
+    console.log('Poor Yorick:', game.state.local.users[name]);
+    game.fabric.applyPatches(patches);
+  });
+
+  game.on('message', function (msg) {
+    console.log('[MESSAGE]', msg);
   });
 
   // when the game starts, add player and emulate some behavior
