@@ -8,7 +8,7 @@ const friend = 'Friend';
 // primary runtime loop
 async function main () {
   // when the game's internal state changes, log some details to the console
-  game.on('patches', async function (patches) {
+  game.on('patches', function (patches) {
     console.log('game state changed:', patches);
     console.log('game state:', game.state);
     console.log('Poor Yorick:', game.state.local.users[name]);
