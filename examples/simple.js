@@ -22,19 +22,7 @@ async function main () {
   game.on('ready', function () {
     // trust state modifications from ourselves
     game.fabric.trust(game);
-
-    // emit a user, as if it came from an external source
-    game.fabric.emit('user', {
-      id: name,
-      name: name
-    });
-
-    // add a player to the game (same username as we provided before)
-    // note that this emulates a Doorman "join" event
-    game.fabric.emit('join', {
-      user: name,
-      channel: 'idlerpg'
-    });
+    game.fabric.replay('log.json');
 
     // emulate online/offline activity changes
     setInterval(function () {
