@@ -1,6 +1,6 @@
 [
   { "type": "user", "id": "Yorick", "name": "Yorick" },
-  { "type": "user", "id": "Friend", "name": "Friend"  },
+  { "type": "user", "id": "Friend", "name": "Friend" },
   { "type": "join", "user": "Yorick", "channel": "idlerpg" },
   { "type": "join", "user": "Friend", "channel": "idlerpg" },
   { "type": "block" },

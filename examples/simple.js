@@ -3,6 +3,7 @@
 const IdleRPG = require('../lib/idlerpg');
 const game = new IdleRPG({ interval: 1000 });
 const name = 'Yorick';
+const friend = 'Friend';
 
 // primary runtime loop
 async function main () {
@@ -25,7 +26,7 @@ async function main () {
     game.fabric.replay('log.json');
 
     // emulate online/offline activity changes
-    setInterval(function () {
+    setInterval(async function () {
       let status = (Math.random() > 0.1) ? 'online' : 'offline';
       // emulate a status change
       // Normally, Fabric will broadcast these events when a service indicates
@@ -34,6 +35,12 @@ async function main () {
         { op: 'replace', path: `/local/users/${name}/presence`, value: status },
         { op: 'replace', path: `/local/users/${name}/online`, value: (status === 'online') }
       ]);
+
+      await game._handleTransferRequest({
+        actor: 'Yorick',
+        object: '!transfer 1 Friend',
+        target: 'private'
+      });
     }, 12000);
   });
 
