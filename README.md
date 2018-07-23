@@ -35,9 +35,10 @@ In the `examples` directory, you can find the following sample program:
 const IdleRPG = require('idlerpg');
 const game = new IdleRPG({ interval: 1000 });
 const name = 'Yorick';
+const friend = 'Friend';
 
 async function main () {
-  game.on('patches', async function (patches) {
+  game.on('patches', function (patches) {
     game.fabric.applyPatches(patches);
   });
 
@@ -46,11 +47,8 @@ async function main () {
   });
 
   game.on('ready', function () {
-    game.fabric.emit('service', { name: 'local' });
-    game.fabric.emit('join', {
-      user: name,
-      channel: 'idlerpg'
-    });
+    game.fabric.trust(game);
+    game.fabric.replay('log.json');
   });
 
   return game.start();
@@ -63,9 +61,9 @@ This minimal program demonstrates the full IdleRPG loop using a "local" service,
 including composing a local copy of the in-game state (stored in `game.fabric`).
 
 ### `idlerpg-bot`
-[`idlerpg-bot`][bot] is a [`doorman`]-powered chatbot with good examples of how
-the underlying messaging layer operates, as well as how to integrate IdleRPG
-into your own applications.
+[`idlerpg-bot`][bot] is a [[`doorman`](https://github.com/FabricLabs/doorman)]-
+powered chatbot with good examples of how the underlying messaging layer
+operates, as well as how to integrate IdleRPG into your own applications.
 
 ## API
 IdleRPG uses [an event-driven API][fabric-events] to send messages between
