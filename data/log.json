@@ -8,6 +8,10 @@
     "type": "message",
     "actor": "Yorick",
     "object": "!transfer 1 Friend",
-    "target": "private"
+    "target": "private",
+    "origin": {
+      "type": "Link",
+      "name": "local"
+    }
   }
 ]
