@@ -1,6 +1,6 @@
 {
   "name": "idlerpg",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
   "main": "lib/idlerpg.js",
   "scripts": {
@@ -10,7 +10,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/martindale/idlerpg.git"
+    "url": "git+https://github.com/FabricLabs/idlerpg.git"
   },
   "keywords": [
     "idlerpg",
@@ -20,9 +20,9 @@
   "author": "Fabric Labs",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/martindale/idlerpg/issues"
+    "url": "https://github.com/FabricLabs/idlerpg/issues"
   },
-  "homepage": "https://github.com/martindale/idlerpg#readme",
+  "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
     "fast-json-patch": "^2.0.6",
     "indefinite-article": "0.0.2",
