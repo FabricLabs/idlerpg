@@ -4,9 +4,11 @@
   "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
   "main": "lib/idlerpg.js",
   "scripts": {
-    "test": "mocha --exit",
-    "coverage": "istanbul cover _mocha",
-    "make:docs": "jsdoc lib README.md -d docs"
+    "coverage": "istanbul cover _mocha -- --exit",
+    "docs": "npm run make:docs && http-server docs/",
+    "make:docs": "jsdoc lib README.md -c jsdoc.json -d docs",
+    "review:coverage": "npm run coverage && http-server coverage/lcov-report",
+    "test": "mocha --exit"
   },
   "repository": {
     "type": "git",
@@ -26,12 +28,12 @@
   "dependencies": {
     "fast-json-patch": "^2.0.6",
     "indefinite-article": "0.0.2",
-    "level": "^3.0.0",
+    "level": "^3.0.2",
     "mkdirpsync": "^0.1.0",
     "node-schedule": "^1.3.0"
   },
   "devDependencies": {
-    "istanbul": "^0.4.5",
+    "istanbul": "^1.1.0-alpha.1",
     "jsdoc": "^3.5.5",
     "mocha": "^5.1.0"
   }
