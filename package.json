@@ -28,6 +28,7 @@
   "dependencies": {
     "fast-json-patch": "^2.0.6",
     "indefinite-article": "0.0.2",
+    "json-pointer": "^0.6.0",
     "level": "^3.0.2",
     "mkdirpsync": "^0.1.0",
     "node-schedule": "^1.3.0"
