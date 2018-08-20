@@ -1,4 +1,8 @@
 # IdleRPG
+[![Build Status](https://img.shields.io/travis/FabricLabs/idlerpg.svg?branch=master&style=flat-square)](https://travis-ci.org/FabricLabs/idlerpg)
+[![Coverage Status](https://img.shields.io/coveralls/FabricLabs/idlerpg.svg?style=flat-square)](https://coveralls.io/r/FabricLabs/idlerpg)
+[![Total Contributors](https://img.shields.io/github/contributors/FabricLabs/idlerpg.svg?style=flat-square)](https://github.com/FabricLabs/idlerpg/contributors)
+
 Simple, self-playing game intended for chat servers.
 
 ## Getting Started
