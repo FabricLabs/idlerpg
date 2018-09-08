@@ -1,5 +1,6 @@
 {
-  "chat": "https://chat.fabric.pub/#/room/#idlerpg:matrix.org",
+  "name": "IdleRPG",
+  "chat": "https://to.fabric.pub/#idlerpg:matrix.org",
   "source": "https://github.com/FabricLabs/idlerpg",
   "templates": {
     "default": {

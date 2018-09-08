@@ -3,7 +3,6 @@
 const IdleRPG = require('../lib/idlerpg');
 const game = new IdleRPG({ interval: 1000 });
 const name = 'Yorick';
-const friend = 'Friend';
 
 // primary runtime loop
 async function main () {

@@ -3,7 +3,6 @@
   <head>
     <meta charset="utf-8">
     <title><?js= title ?> &middot; Documentation</title>
-
     <script src="scripts/prettify/prettify.js"> </script>
     <script src="scripts/prettify/lang-css.js"> </script>
     <!--[if lt IE 9]>
@@ -18,14 +17,13 @@
       <?js= content ?>
     </div>
     <nav><?js= this.nav ?></nav>
-    <br class="clear">
+    <br class="clear" />
     <footer>
-        <a href="<?js= env.conf.source ?>">git://</a>
-        <?js if (env.conf.chat) { ?>
-          &middot; <a href="<?js= env.conf.chat ?>">Community</a>
-        <?js } ?>
+      <a href="<?js= env.conf.source ?>">Source Code</a> &middot; <a href="/">Documentation</a> &middot; <a href="https://to.matrix.pub/#idlerpg:verse.im">Play</a><?js if (env.conf.chat) { ?> &middot; <a href="<?js= env.conf.chat ?>">Chat</a><?js } ?>
     </footer>
-    <script> prettyPrint(); </script>
-    <script src="scripts/linenumber.js"> </script>
+    <script>
+      prettyPrint();
+    </script>
+    <script src="scripts/linenumber.js"></script>
   </body>
 </html>
