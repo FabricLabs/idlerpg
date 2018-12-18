@@ -1,0 +1,10 @@
+{
+  "name": "IdleRPG",
+  "chat": "https://to.fabric.pub/#idlerpg:matrix.org",
+  "source": "https://github.com/FabricLabs/idlerpg",
+  "templates": {
+    "default": {
+      "layoutFile": "assets/docs.tmpl"
+    }
+  }
+}

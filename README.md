@@ -1,4 +1,8 @@
 # IdleRPG
+[![Build Status](https://img.shields.io/travis/FabricLabs/idlerpg.svg?branch=master&style=flat-square)](https://travis-ci.org/FabricLabs/idlerpg)
+[![Coverage Status](https://img.shields.io/coveralls/FabricLabs/idlerpg.svg?style=flat-square)](https://coveralls.io/r/FabricLabs/idlerpg)
+[![Total Contributors](https://img.shields.io/github/contributors/FabricLabs/idlerpg.svg?style=flat-square)](https://github.com/FabricLabs/idlerpg/contributors)
+
 Simple, self-playing game intended for chat servers.
 
 ## Getting Started
@@ -18,7 +22,7 @@ Running IdleRPG on its own:
 1. `git clone git@github.com:YOUR_USERNAME/idlerpg.git`
 2. `cd idlerpg`
 3. `npm install`
-4. `node examples/simple.js`
+4. `npm start`
 
 ## Examples
 The simplest way to see IdleRPG in action is to join [`#idlerpg:verse.im`][chat],
@@ -91,7 +95,7 @@ If this is an idea you're interested in, come join [the Fabric
 community][fabric-community]!
 
 [bot]: https://github.com/FabricLabs/idlerpg-bot
-[chat]: https://chat.verse.im/#/room/#idlerpg:verse.im
+[chat]: https://to.fabric.pub/#idlerpg:verse.im
 [doorman]: https://github.com/FabricLabs/doorman
 [fabric-events]: https://dev.fabric.pub/docs
 [verse-team]: https://verse.im/people
