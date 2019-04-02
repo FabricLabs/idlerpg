@@ -4,6 +4,12 @@
   { "name": "kobold", "attack": 3, "speed": 6 },
   { "name": "ogre", "attack": 8, "speed": 2 },
   { "name": "orc", "attack": 7, "speed": 4 },
-  { "name": "troll", "attack": 10, "speed": 1 },
-  { "name": "spirit", "attack": 3, "speed": 10 }
+  { "name": "troll", "attack": 10, "speed": 2 },
+  { "name": "spirit", "attack": 3, "speed": 10 },
+  { "name": "shadow", "attack": 3, "speed": 9 },
+  { "name": "spider", "attack": 2, "speed": 10 },
+  { "name": "lich", "attack": 8, "speed": 6 },
+  { "name": "skeleton", "attack": 4, "speed": 2 },
+  { "name": "cyclops", "attack": 10, "speed": 1 },
+  { "name": "slime", "attack": 3, "speed": 1 }
 ]

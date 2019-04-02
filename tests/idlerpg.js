@@ -12,7 +12,8 @@ describe('IdleRPG', function () {
     let rpg = new IdleRPG();
 
     rpg.on('ready', async function () {
-      rpg.stop().then(done);
+      await rpg.stop();
+      return done();
     });
 
     rpg.start();
@@ -22,9 +23,10 @@ describe('IdleRPG', function () {
     let rpg = new IdleRPG({ interval: 10 });
     let count = 0;
 
-    rpg.on('tick', function () {
+    rpg.on('tick', async function () {
       if (++count === 10) {
-        rpg.stop().then(done);
+        await rpg.stop();
+        return done();
       }
     });
 
@@ -32,16 +34,36 @@ describe('IdleRPG', function () {
   });
 
   it('should consume a series of events', function (done) {
-    let rpg = new IdleRPG({ interval: 10 });
     let count = 0;
+    let rpg = new IdleRPG({
+      interval: 0,
+      channel: 'idlerpg',
+      chance: 1
+    });
 
-    rpg.on('tick', function () {
+    rpg.on('tick', async function () {
+
       if (++count === 10) {
-        rpg.stop().then(done);
+        await rpg.stop();
+        return done();
       }
     });
 
-    rpg.start();
-  });
+    async function main () {
+      await rpg.start();
 
+      rpg._registerUser({
+        id: 'test',
+        name: 'test',
+        presence: 'online'
+      });
+
+      rpg.fabric.emit('join', {
+        user: 'test',
+        channel: 'idlerpg'
+      });
+    }
+
+    main();
+  });
 });

@@ -1,35 +1,45 @@
 {
   "name": "idlerpg",
-  "version": "0.0.0",
-  "description": "generic implementation of IdleRPG",
+  "version": "0.1.1",
+  "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
   "main": "lib/idlerpg.js",
   "scripts": {
-    "test": "mocha",
-    "coverage": "istanbul cover _mocha"
+    "coverage": "istanbul cover _mocha tests -- --exit",
+    "docs": "npm run make:docs && http-server docs/",
+    "make:docs": "jsdoc lib README.md -c jsdoc.json -d docs",
+    "review:coverage": "npm run coverage && http-server coverage/lcov-report",
+    "start": "node scripts/idlerpg.js",
+    "test": "mocha tests --exit"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/martindale/idlerpg.git"
+    "url": "git+https://github.com/FabricLabs/idlerpg.git"
   },
   "keywords": [
     "idlerpg",
+    "fabric",
+    "idle",
     "rpg",
     "game"
   ],
   "author": "Fabric Labs",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/martindale/idlerpg/issues"
+    "url": "https://github.com/FabricLabs/idlerpg/issues"
   },
-  "homepage": "https://github.com/martindale/idlerpg#readme",
+  "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
     "fast-json-patch": "^2.0.6",
     "indefinite-article": "0.0.2",
-    "level": "^3.0.0",
-    "mkdirpsync": "^0.1.0"
+    "json-pointer": "^0.6.0",
+    "level": "^3.0.2",
+    "mkdirpsync": "^0.1.0",
+    "node-schedule": "^1.3.0"
   },
   "devDependencies": {
-    "istanbul": "^0.4.5",
+    "http-server": "^0.11.1",
+    "istanbul": "^1.1.0-alpha.1",
+    "jsdoc": "FabricLabs/jsdoc#fabric",
     "mocha": "^5.1.0"
   }
 }
