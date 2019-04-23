@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const Core = require('../lib/core');
+const Core = require('../types/core');
 
 async function main () {
   let core = new Core();

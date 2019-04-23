@@ -2,7 +2,7 @@
   "name": "idlerpg",
   "version": "0.1.1",
   "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
-  "main": "lib/idlerpg.js",
+  "main": "types/idlerpg.js",
   "scripts": {
     "coverage": "istanbul cover _mocha tests -- --exit",
     "docs": "npm run make:docs && http-server docs/",
