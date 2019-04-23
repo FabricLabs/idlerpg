@@ -34,7 +34,7 @@ class IdleRPG extends RPG {
     super(config);
     this.config = Object.assign({
       name: 'idlerpg',
-      alias: '@idlerpg:verse.im',
+      alias: '@idlerpg:roleplaygateway.com',
       channels: ['idlerpg'],
       interval: TICK_INTERVAL,
       luck: ENCOUNTER_CHANCE,
@@ -370,7 +370,7 @@ class IdleRPG extends RPG {
   }
 
   async _handlePlayRequest (message) {
-    return `Join #idlerpg:verse.im to play.  Permalink: https://to.fabric.pub/#idlerpg:verse.im`;
+    return `Join #idlerpg:roleplaygateway.com to play.  Permalink: https://to.fabric.pub/#idlerpg:roleplaygateway.com`;
   }
 
   async _handleProfileRequest (message) {
