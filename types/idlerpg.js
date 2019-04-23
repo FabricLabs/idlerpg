@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  PER_TICK_CAPITAL,
+  PER_TICK_EXPERIENCE,
+  TICK_INTERVAL,
+  ENCOUNTER_CHANCE
+} = require('../constants');
+
 const article = require('indefinite-article');
 const manager = require('fast-json-patch');
 const pointer = require('json-pointer');
@@ -11,11 +18,6 @@ const Fabric = require('@fabric/core');
 // Internal Types
 const Encounter = require('./encounter');
 const Entity = require('./entity');
-
-const PER_TICK_CAPITAL = 10;
-const PER_TICK_EXPERIENCE = 10;
-const TICK_INTERVAL = 600000;
-const ENCOUNTER_CHANCE = 0.05;
 
 /**
  * Generic IdleRPG definition.
