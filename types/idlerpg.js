@@ -1,5 +1,13 @@
 'use strict';
 
+// ## IdleRPG Core
+// A walkthrough of the Fabric API paired with a working example.
+
+// ### Configuration
+const config = require('../config');
+
+// CONSTANTS
+// We use the following pattern for storing information that DOES NOT CHANGE.
 const {
   PER_TICK_CAPITAL,
   PER_TICK_EXPERIENCE,
@@ -7,16 +15,25 @@ const {
   ENCOUNTER_CHANCE
 } = require('../constants');
 
+// ### Dependencies
+// Fabric is designed to reduce dependency on external libraries.  At the top of
+// every file is the dependency list, specifying outstanding requirements.
 const article = require('indefinite-article');
 const manager = require('fast-json-patch');
 const pointer = require('json-pointer');
 const schedule = require('node-schedule');
 
-// Fabric Core
+// ### Fabric Core
+// IdleRPG is a demonstration of [Fabric](https://fabric.pub), a peer-to-peer
+// protocol for running decentralized applications.  Read the docs!
+//
+// After including `@fabric/core`, we import RPG, a template class for designing
+// & building role-playing games (RPGs).
 const Fabric = require('@fabric/core');
 const RPG = require('@fabric/rpg');
 
-// Internal Types
+// ### Internal Types
+// Here we've created a few internal classes to keep IdleRPG well-organized.
 const Encounter = require('./encounter');
 const Entity = require('./entity');
 
@@ -25,35 +42,49 @@ const Entity = require('./entity');
  */
 class IdleRPG extends RPG {
   /**
-   * C
+   * Implements a Game Engine which runs an instance of IdleRPG.
    * @param {Object} config Settings for IdleRPG to use.
    * @param {Number} config.interval Tick interval (in milliseconds).
+   * @param {Number} config.luck How likely is an encounter? % chance, 0-1
    * @return {IdleRPG} Instance of IdleRPG.
    */
-  constructor (config) {
-    super(config);
+  constructor (settings = {}) {
+    super(settings);
+
     this.config = Object.assign({
       name: 'idlerpg',
+      path: 'stores/idlerpg',
       alias: '@idlerpg:roleplaygateway.com',
       channels: ['idlerpg'],
+      services: ['local'],
       interval: TICK_INTERVAL,
       luck: ENCOUNTER_CHANCE,
       PER_TICK_CAPITAL: PER_TICK_CAPITAL,
-      PER_TICK_EXPERIENCE: PER_TICK_EXPERIENCE
-    }, config);
+      PER_TICK_EXPERIENCE: PER_TICK_EXPERIENCE,
+      debug: config.debug
+    }, settings);
 
     this.channels = [];
     this.stack = [];
 
+    // ### Our Game State
+    // The Game State holds all information necessary to reconstruct your game.
+    // We use human-friendly names and keep things as small as possible, so do
+    // your part in keeping this well-maintained!
     this.state = {
-      channels: {},
-      players: {},
-      services: {},
-      users: {}
+      channels: {}, // stores a list of channels.
+      players: {}, // players are users... !
+      services: {}, // services are networks
+      users: {} // users are network clients
     };
 
+    // pre-loading Fabric
     this.fabric = new Fabric();
+
+    // configure our own observer
     this.observer = manager.observe(this.state);
+
+    // these are the configurable commands.
     this.triggers = [
       { name: 'online', value: this._handleOnlineRequest },
       { name: 'memberlist', value: this._handleMemberlistRequest },
@@ -68,17 +99,39 @@ class IdleRPG extends RPG {
     return this;
   }
 
+  replay (path) {
+    let events = null;
+
+    try {
+      events = require(`../data/${path}`);
+    } catch (E) {
+      console.error('Could not load replay:', path, E);
+    }
+
+    if (events) {
+      console.log('replaying log:', events);
+      for (let i = 0; i < events.length; i++) {
+        this.fabric.emit(events[i].type, events[i]);
+      }
+    }
+  }
+
   /**
    * Entry point for running IdleRPG.  Creates a datastore, subscribes to events,
    * initializes the clock, and emits a "ready" event when complete.
    * @return {IdleRPG} Chainable method.
    */
   async start () {
+    await super.start();
+
     console.log('IdleRPG starting...');
+    console.log('Start state:', this.state);
 
     let rpg = this;
 
-    rpg.store = new Fabric.Store({ path: './data/idlerpg' });
+    await rpg.restore();
+
+    rpg.store = new Fabric.Store({ path: './stores/idlerpg' });
 
     try {
       let state = await rpg.store.get('/');
@@ -88,6 +141,8 @@ class IdleRPG extends RPG {
     } catch (E) {
       console.error('Could not restore state:', E);
     }
+
+    console.log('before binding state:', this.state);
 
     rpg.fabric.on('join', rpg._handleJoin.bind(rpg));
     rpg.fabric.on('part', rpg._disjoinPlayer.bind(rpg));
@@ -101,6 +156,7 @@ class IdleRPG extends RPG {
     for (let name in rpg.fabric.services) {
       let service = rpg.fabric.services[name];
       service.once('ready', async function () {
+        console.log('[IDLERPG]', 'service ready:', name);
         for (let i in rpg.config.channels) {
           let channel = rpg.config.channels[i];
           let members = [];
@@ -149,18 +205,27 @@ class IdleRPG extends RPG {
    * @return {IdleRPG} Chainable method.
    */
   async tick () {
+    super.tick();
+
     console.debug('[IDLERPG]', `Beginning tick: ${new Date()}`);
 
     let rpg = this;
-    let players = await rpg._getActivePlayers().catch(function errorHandler (E) {
+    let players = await this._getPlayers();
+    let active = await rpg._getActivePlayers().catch(function errorHandler (E) {
       console.error('[IDLERPG]', 'Could not get active players:', E);
     });
 
     // TODO: determine validity from signatures
     // sum all transaction signatures to achieve single-signature per block
-    for (let i in players) {
-      await rpg._computeRound(players[i]);
+    for (let i in active) {
+      console.log(`found ${i} in ${JSON.stringify(active)}`);
+      await rpg._computeRound(active[i]);
     }
+
+    await this.save();
+
+    console.debug('[IDLERPG]', `tick complete: ${new Date()}`);
+    console.debug('[IDLERPG]', `tick state:`, this.state);
 
     this.emit('tick');
 
@@ -192,11 +257,12 @@ class IdleRPG extends RPG {
 
   async _computeRound (player) {
     let rpg = this;
-
+    console.log('computing round for player:', player);
     let profile = await rpg._getProfile(player.id).catch(function (E) {
       console.error('Could not get profile:', E);
     });
 
+    console.log('profile:', profile);
     if (!profile) return false;
 
     // relax the cooldown...
@@ -205,8 +271,11 @@ class IdleRPG extends RPG {
     }
 
     if (profile.presence === 'online') {
+      console.log('presence is online!');
       await rpg.reward(profile);
     }
+
+    console.log('round computed:', profile);
 
     return profile;
   }
@@ -261,7 +330,11 @@ class IdleRPG extends RPG {
 
   async reward (player) {
     let rpg = this;
+
+    console.log('rewarding:', player);
     let instance = await rpg._rollForEncounter(player);
+
+    console.log('instance:', instance);
 
     if (instance) {
       Object.assign(player, instance);
@@ -280,6 +353,9 @@ class IdleRPG extends RPG {
     if (sample.level && sample.level > prior.level) {
       rpg.announce(`${player.name} has reached level ${sample.level}!`);
     }
+
+    console.log('player check:', player);
+    console.log('samplek:', sample);
 
     let target = pointer.escape(player.id);
 
@@ -349,7 +425,7 @@ class IdleRPG extends RPG {
     }
 
     let base = new Entity({ id: path });
-    let data = Object.assign({}, base, backup, prior);
+    let data = Object.assign({}, base || {}, backup || {}, prior || {});
     let profile = {
       id: data.id,
       name: data.name,
@@ -510,6 +586,11 @@ class IdleRPG extends RPG {
     return `Leaderboard:\n${members.join('\n')}`;
   }
 
+  async _getPresence (id) {
+    let path = pointer.escape(id);
+    return pointer.get(this.state, `/users/${path}/presence`);
+  }
+
   /**
    * Gets an up-to-date list of all IdleRPG players.
    * @return {Array} List of players.
@@ -526,12 +607,21 @@ class IdleRPG extends RPG {
           let path = [name, 'users', members[j]].join('/');
           let profile = await rpg._getProfile(path).catch(rpg.error);
           let player = await rpg._registerPlayer(profile).catch(rpg.error);
-
-          if (player) {
-            player.presence = await service._getPresence(members[j]).catch(rpg.error);
-            players.push(player);
-          }
         }
+      }
+    }
+
+    for (let key in rpg.state.players) {
+      console.log('iterating player:', key);
+      let profile = await rpg._getProfile(key).catch(rpg.error);
+      let player = await rpg._registerPlayer(profile).catch(rpg.error);
+
+      console.log('profile:', profile);
+      console.log('player:', player);
+
+      if (player) {
+        player.presence = await rpg._getPresence(key).catch(rpg.error);
+        players.push(player);
       }
     }
 
@@ -556,19 +646,34 @@ class IdleRPG extends RPG {
   async _handleJoin (join) {
     if (this.config.debug) console.log('[IDLERPG]', 'handling join:', join);
 
-    await this._registerChannel({
+    let channel = await this._registerChannel({
       id: join.channel,
       name: join.channel
     });
 
     let parts = join.channel.split('/');
-
     if (parts.length === 1) parts = ['local', 'channels', join.channel];
-    if (this.channels.includes(parts[2])) {
+    let room = pointer.escape(parts.join('/'));
+    let path = `/channels/${room}/members`;
+
+    if (this.config.channels.includes(join.channel)) {
       let chunks = join.user.split('/');
       if (chunks.length === 1) chunks = ['local', 'users', join.user];
       let player = await this._registerPlayer({ id: join.user });
-      await this._welcomePlayer(player);
+      let list = pointer.get(this.state, path);
+      let set = new Set(list);
+
+      set.add(join.user);
+
+      manager.applyPatch(this.state, [{
+        op: 'replace',
+        path: path,
+        value: Array.from(set)
+      }]);
+
+      if (player) {
+        await this._welcomePlayer(player);
+      }
     }
   }
 
@@ -577,13 +682,14 @@ class IdleRPG extends RPG {
   }
 
   async _registerPlayer (player) {
+    if (this.config.debug) console.log('[IDLERPG]', 'registering player:', player);
     if (!player.id) return console.error('Player must have an "id" property.');
 
     let rpg = this;
     let parts = player.id.split('/');
 
     if (parts.length === 1) {
-      parts = ['local', 'users', player];
+      parts = ['local', 'users', player.id];
     }
 
     let id = [parts[0], 'users', parts[2]].join('/');
@@ -603,7 +709,8 @@ class IdleRPG extends RPG {
 
     await rpg.commit();
 
-    let profile = rpg._GET(`/players/${target}`);
+    // let profile = rpg._GET(`/players/${target}`);
+    let profile = pointer.get(rpg.state, `/players/${target}`);
 
     return profile;
   }
@@ -646,6 +753,7 @@ class IdleRPG extends RPG {
   }
 
   async _registerChannel (channel) {
+    if (this.config.debug) console.log('[IDLERPG]', 'registering channel:', channel);
     if (!channel.id) return console.error('Channel must have an "id" property.');
 
     let rpg = this;
@@ -707,7 +815,6 @@ class IdleRPG extends RPG {
 
   // TODO: use Fabric for patch event handling
   async _handlePatches (patches) {
-    console.log('[IDLERPG]', 'handling patches:', patches);
     manager.applyPatch(this.state, patches);
     await this.commit();
   }
