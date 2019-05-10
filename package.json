@@ -29,8 +29,9 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#pruning",
-    "@fabric/rpg": "FabricLabs/rpg",
+    "@fabric/core": "fabriclabs/fabric#pruning",
+    "@fabric/http": "FabricLabs/web#fabric-0.1.0",
+    "@fabric/rpg": "FabricLabs/rpg#modernize",
     "fast-json-patch": "^2.0.6",
     "indefinite-article": "0.0.2",
     "json-pointer": "^0.6.0",

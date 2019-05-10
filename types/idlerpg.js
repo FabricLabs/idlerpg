@@ -32,11 +32,6 @@ const schedule = require('node-schedule');
 const Fabric = require('@fabric/core');
 const RPG = require('@fabric/rpg');
 
-// ### Internal Types
-// Here we've created a few internal classes to keep IdleRPG well-organized.
-const Encounter = require('./encounter');
-const Entity = require('./entity');
-
 /**
  * Generic IdleRPG definition.
  */
@@ -79,7 +74,9 @@ class IdleRPG extends RPG {
     };
 
     // pre-loading Fabric
-    this.fabric = new Fabric();
+    this.fabric = new Fabric({
+      services: this.config.services
+    });
 
     // configure our own observer
     this.observer = manager.observe(this.state);
@@ -95,6 +92,8 @@ class IdleRPG extends RPG {
       { name: 'transfer', value: this._handleTransferRequest },
       { name: 'balance', value: this._handleBalanceRequest }
     ];
+
+    this['@entity'] = this.state;
 
     return this;
   }
@@ -125,24 +124,9 @@ class IdleRPG extends RPG {
     await super.start();
 
     console.log('IdleRPG starting...');
-    console.log('Start state:', this.state);
+    this.log('Start state:', this.state);
 
     let rpg = this;
-
-    await rpg.restore();
-
-    rpg.store = new Fabric.Store({ path: './stores/idlerpg' });
-
-    try {
-      let state = await rpg.store.get('/');
-      let parsed = JSON.parse(state);
-      let merged = Object.assign({}, rpg.state, parsed);
-      rpg.state = merged;
-    } catch (E) {
-      console.error('Could not restore state:', E);
-    }
-
-    console.log('before binding state:', this.state);
 
     rpg.fabric.on('join', rpg._handleJoin.bind(rpg));
     rpg.fabric.on('part', rpg._disjoinPlayer.bind(rpg));
@@ -205,29 +189,29 @@ class IdleRPG extends RPG {
    * @return {IdleRPG} Chainable method.
    */
   async tick () {
-    super.tick();
+    await super.tick();
 
     console.debug('[IDLERPG]', `Beginning tick: ${new Date()}`);
 
     let rpg = this;
-    let players = await this._getPlayers();
     let active = await rpg._getActivePlayers().catch(function errorHandler (E) {
       console.error('[IDLERPG]', 'Could not get active players:', E);
     });
 
+    console.log('active players:', active);
+
     // TODO: determine validity from signatures
     // sum all transaction signatures to achieve single-signature per block
     for (let i in active) {
-      console.log(`found ${i} in ${JSON.stringify(active)}`);
       await rpg._computeRound(active[i]);
     }
 
-    await this.save();
+    let id = await this.save();
 
-    console.debug('[IDLERPG]', `tick complete: ${new Date()}`);
-    console.debug('[IDLERPG]', `tick state:`, this.state);
+    console.debug('[IDLERPG]', `tick ${id} complete: ${new Date()}`);
+    // console.debug('[IDLERPG]', `tick state:`, this.state);
 
-    this.emit('tick');
+    this.emit('tick', id);
 
     return rpg;
   }
@@ -258,7 +242,7 @@ class IdleRPG extends RPG {
   async _computeRound (player) {
     let rpg = this;
     console.log('computing round for player:', player);
-    let profile = await rpg._getProfile(player.id).catch(function (E) {
+    let profile = await rpg._getProfile(player.sharing[0]).catch(function (E) {
       console.error('Could not get profile:', E);
     });
 
@@ -270,8 +254,8 @@ class IdleRPG extends RPG {
       profile.cooldown = profile.cooldown - rpg.config.PER_TICK_CAPITAL;
     }
 
-    if (profile.presence === 'online') {
-      console.log('presence is online!');
+    let user = rpg.get(`/users/${profile.path}`);
+    if (user.presence === 'online') {
       await rpg.reward(profile);
     }
 
@@ -299,7 +283,7 @@ class IdleRPG extends RPG {
     let player = Object.assign({}, instance);
 
     if (Math.random() < rpg.config.luck) {
-      let encounter = new Encounter(player);
+      let encounter = new RPG.Encounter(player);
 
       result = Object.assign({}, player, encounter.entity);
 
@@ -318,7 +302,7 @@ class IdleRPG extends RPG {
           } else if (encounter.state.skipped) {
             claim += `, but discarded it as they were carrying too much already.`;
           } else {
-            claim += `.  They now have **${player.inventory.length}** items in their inventory.`;
+            claim += `.  They now have **${player.data.inventory.length}** items in their inventory.`;
           }
           rpg.announce(claim);
           break;
@@ -341,29 +325,23 @@ class IdleRPG extends RPG {
     }
 
     // snapshot initial state
-    let prior = new Entity(player);
+    let prior = new RPG.Entity(player);
 
     // primary updates
-    player.wealth = (player.wealth || 0) + PER_TICK_CAPITAL;
-    player.experience = (player.experience || 0) + PER_TICK_EXPERIENCE;
+    player.data.wealth = (player.data.wealth || 0) + PER_TICK_CAPITAL;
+    player.data.experience = (player.data.experience || 0) + PER_TICK_EXPERIENCE;
 
     // sample the contents
-    let sample = new Entity(player);
+    let sample = new RPG.Entity(player);
+    let state = new Fabric.State({ name: player.name });
 
     if (sample.level && sample.level > prior.level) {
       rpg.announce(`${player.name} has reached level ${sample.level}!`);
     }
 
-    console.log('player check:', player);
-    console.log('samplek:', sample);
+    this.set(`/players/${state.id}`, player);
 
-    let target = pointer.escape(player.id);
-
-    manager.applyPatch(rpg.state, [
-      { op: 'replace', path: `/players/${target}`, value: player }
-    ]);
-
-    await rpg.commit();
+    return this.get(`/players/${state.id}`);
   }
 
   async penalize (player) {
@@ -396,51 +374,33 @@ class IdleRPG extends RPG {
    */
   async _getProfile (id) {
     let rpg = this;
-    let parts = id.split('/');
+    let player = rpg.get(`/players/${id}`);
+    let user = rpg.get(`/users/${player.path}`);
+    let data = user;
 
-    if (parts.length === 1) {
-      parts = ['local', 'users', id];
-    }
+    console.log('get profile got player by name:', player.name);
 
-    let path = parts.join('/');
-    let target = pointer.escape(path);
-
-    let old = null;
-    let prior = null;
-    let backup = null;
-
-    try {
-      old = await rpg.store.get(`/${path}`);
-      backup = JSON.parse(old);
-    } catch (E) {
-      // console.error('Exception thrown getting (old) profile:', E);
-    }
-
-    try {
-      // TODO: use Fabric._GET
-      // prior = await rpg.fabric._GET(`/players/${target}`);
-      prior = await rpg._GET(`/players/${target}`);
-    } catch (E) {
-      console.error('Exception thrown getting profile:', E);
-    }
-
-    let base = new Entity({ id: path });
-    let data = Object.assign({}, base || {}, backup || {}, prior || {});
-    let profile = {
-      id: data.id,
+    let state = new Fabric.State({ name: player.name });
+    let profile = Object.assign({
+      id: state.id,
       name: data.name,
-      type: 'Player',
-      health: data.health || 100,
-      stamina: data.stamina || 100,
-      experience: data.experience || 0,
-      equipment: Object.assign({}, data.equipment, {
-        weapon: data.weapon || null
-      }),
-      inventory: data.inventory || [],
-      presence: data.presence || 'offline',
-      effects: data.effects || {},
-      wealth: data.wealth || 0
-    };
+      path: data.path,
+      presence: user.presence || 'offline',
+      data: {}
+    }, player);
+
+    // #### GAME STATS
+    profile.data.health = player.data.health || 100;
+    profile.data.stamina = player.data.stamina || 100;
+    profile.data.experience = player.data.experience || 0;
+    profile.data.inventory = player.data.inventory || [];
+    profile.data.effects = player.data.effects || {};
+    profile.data.wealth = player.data.wealth || 0;
+
+    // #### CHARACTER EQUIPMENT
+    profile.data.equipment = Object.assign({}, player.data.equipment, {
+      weapon: player.data.weapon || null
+    });
 
     return profile;
   }
@@ -504,8 +464,19 @@ class IdleRPG extends RPG {
     if (parts.length < 3) return `Command format: \`!transfer <amount> <user>\``;
     if (message.actor.split('/')[2] === parts[2]) return `You cannot transfer money to yourself.`;
 
-    let actor = await rpg._getProfile(message.actor);
-    let target = await rpg._getProfile(`${message.origin.name}/users/${parts[2]}`);
+    console.log('handling transfer request:', message);
+    let from = `${message.origin.name.toLowerCase()}/users/${message.actor}`;
+
+    console.log('inferred from:', from);
+
+    let actorState = new Fabric.State({ name: message.actor });
+    let actorParts = [actorState.id, actorState.render()];
+
+    let targetState = new Fabric.State({ name: parts[2] });
+    let targetParts = [targetState.id, targetState.render()];
+
+    let actor = rpg.get(`/players/${actorParts[0]}`);
+    let target = rpg.get(`/players/${targetParts[0]}`);
     let amount = parseInt(parts[1]);
     // TODO: handle memo
 
@@ -513,8 +484,8 @@ class IdleRPG extends RPG {
     let targetID = pointer.escape(target.id);
 
     if (!target) return `Couldn't find ${message.target}`;
-    if (!actor.wealth) return `You have no wealth to transfer.`;
-    if (parseInt(actor.wealth - amount) < 0) return `You do not have that amount.  You'll need **${parseInt(actor.wealth - amount)}** more <small>IDLE</small> to proceed with this transfer.`;
+    if (!actor.data.wealth) return `You have no wealth to transfer.`;
+    if (parseInt(actor.data.wealth - amount) < 0) return `You do not have that amount.  You'll need **${parseInt(actor.data.wealth - amount)}** more <small>IDLE</small> to proceed with this transfer.`;
 
     await rpg._registerPlayer(actor);
     await rpg._registerPlayer(target);
@@ -525,12 +496,12 @@ class IdleRPG extends RPG {
         {
           op: 'replace',
           path: `/players/${actorID}/wealth`,
-          value: parseInt(actor.wealth) - parseInt(amount)
+          value: parseInt(actor.data.wealth) - parseInt(amount)
         },
         {
           op: 'replace',
           path: `/players/${targetID}/wealth`,
-          value: parseInt(target.wealth) + parseInt(amount)
+          value: parseInt(targe.datat.wealth) + parseInt(amount)
         }
       ];
 
@@ -570,11 +541,11 @@ class IdleRPG extends RPG {
     let list = await rpg._getPlayers();
 
     list.sort(function (a, b) {
-      return b.experience - a.experience;
+      return b.data.experience - a.data.experience;
     });
 
-    let members = list.map(x => {
-      return `1. ${x.name}, with **${x.experience}** experience`;
+    let members = list.map((x, n) => {
+      return `${n}. ${x.name}, with **${x.data.experience}** experience`;
     }).slice(0, 10);
 
     try {
@@ -597,35 +568,15 @@ class IdleRPG extends RPG {
    */
   async _getPlayers () {
     let rpg = this;
-    let players = [];
+    let players = rpg.get(`/players`);
+    let users = rpg.get(`/users`);
+    return Object.values(players);
+  }
 
-    for (let name in rpg.fabric.services) {
-      let service = rpg.fabric.services[name];
-      for (let i in rpg.channels) {
-        let members = await service._getMembers(rpg.channels[i]).catch(rpg.error);
-        for (let j in members) {
-          let path = [name, 'users', members[j]].join('/');
-          let profile = await rpg._getProfile(path).catch(rpg.error);
-          let player = await rpg._registerPlayer(profile).catch(rpg.error);
-        }
-      }
-    }
-
-    for (let key in rpg.state.players) {
-      console.log('iterating player:', key);
-      let profile = await rpg._getProfile(key).catch(rpg.error);
-      let player = await rpg._registerPlayer(profile).catch(rpg.error);
-
-      console.log('profile:', profile);
-      console.log('player:', player);
-
-      if (player) {
-        player.presence = await rpg._getPresence(key).catch(rpg.error);
-        players.push(player);
-      }
-    }
-
-    return players;
+  async _getUsers () {
+    let rpg = this;
+    let users = rpg.get(`/users`);
+    return Object.values(users);
   }
 
   /**
@@ -635,7 +586,10 @@ class IdleRPG extends RPG {
   async _getActivePlayers () {
     let rpg = this;
     let players = await rpg._getPlayers();
-    let online = players.filter(x => (x.presence === 'online'));
+    let online = players.filter(player => {
+      let user = rpg.get(`/users/${player.path}`);
+      return user.presence === 'online';
+    });
 
     return online.filter(function (x) {
       // TODO: configurable exclude of self
@@ -647,20 +601,26 @@ class IdleRPG extends RPG {
     if (this.config.debug) console.log('[IDLERPG]', 'handling join:', join);
 
     let channel = await this._registerChannel({
-      id: join.channel,
+      id: join.channel.toLowerCase(),
       name: join.channel
     });
 
     let parts = join.channel.split('/');
-    if (parts.length === 1) parts = ['local', 'channels', join.channel];
-    let room = pointer.escape(parts.join('/'));
+    if (parts.length === 1) parts = ['local', 'channels', channel.id];
+    let state = new Fabric.State(channel);
+
+    let id = state.id;
+    let room = `${id}`;
     let path = `/channels/${room}/members`;
 
-    if (this.config.channels.includes(join.channel)) {
+    if (
+      (this.config.channels.includes(join.channel)) ||
+      (this.config.channels.includes(join.channel.toLowerCase()))
+    ) {
       let chunks = join.user.split('/');
       if (chunks.length === 1) chunks = ['local', 'users', join.user];
-      let player = await this._registerPlayer({ id: join.user });
-      let list = pointer.get(this.state, path);
+      let player = await this._registerPlayer({ name: join.user });
+      let list = this.get(path);
       let set = new Set(list);
 
       set.add(join.user);
@@ -682,74 +642,63 @@ class IdleRPG extends RPG {
   }
 
   async _registerPlayer (player) {
-    if (this.config.debug) console.log('[IDLERPG]', 'registering player:', player);
-    if (!player.id) return console.error('Player must have an "id" property.');
+    await super._registerPlayer(player);
 
-    let rpg = this;
-    let parts = player.id.split('/');
+    console.log('player to register:', player);
 
-    if (parts.length === 1) {
-      parts = ['local', 'users', player.id];
-    }
+    let result = null;
 
-    let id = [parts[0], 'users', parts[2]].join('/');
-    let target = pointer.escape(id);
-    let path = `/players/${target}`;
-    let data = Object.assign({}, player);
+    // ID is a global identifier, choose it wisely
+    let path = pointer.escape(`local/users/${player.name}`);
+    let state = new Fabric.State(player);
+    let vector = [state.id, state.render()];
+    let profile = Object.assign({
+      type: 'Player',
+      sharing: vector
+    }, player, {
+      id: state.id,
+      path: path,
+      name: player.name,
+      data: {}
+    });
+
+    console.log('player id:', vector[0]);
 
     try {
-      manager.applyPatch(rpg.state, [{
-        op: 'replace',
-        path: path,
-        value: data
-      }]);
+      await this.set(`/players/${vector[0]}`, profile);
+      await this.set(`/users/${player.path}/players`, [vector[0]]);
+
+      result = this.get(`/players/${vector[0]}`);
     } catch (E) {
-      console.error('cannot apply patch:', E);
+      return console.error('Cannot register player:', E);
     }
 
-    await rpg.commit();
-
-    // let profile = rpg._GET(`/players/${target}`);
-    let profile = pointer.get(rpg.state, `/players/${target}`);
-
-    return profile;
+    return result;
   }
 
-  /**
-   * Takes a {@link User} object and registers it as a player.
-   * @param  {User} user User to register as a Player.
-   * @return {Player}      Instance of the Player object.
-   */
   async _registerUser (user) {
-    if (!user.id) return console.error('User must have an "id" property.');
-    if (!user.name) return console.error('User must have a "name" property.');
+    let path = pointer.escape(`local/users/${user.id}`);
+    let result = null;
+    let state = new Fabric.State(user);
+    let transform = [state.id, state.render()];
 
-    let rpg = this;
-    let parts = user.id.split('/');
-
-    if (parts.length === 1) {
-      parts = ['local', 'users', user.id];
-    }
-
-    let id = parts.join('/');
-    let target = pointer.escape(id);
-    let path = `/users/${target}`;
-    let profile = await rpg._getProfile(id);
+    let profile = Object.assign({
+      type: 'User',
+      sharing: transform,
+      presence: 'registering',
+      characters: []
+    }, user, {
+      id: path
+    });
 
     try {
-      manager.applyPatch(rpg.state, [{
-        op: 'replace',
-        path: path,
-        value: profile
-      }]);
+      await this.set(`/users/${path}`, profile);
+      result = this.get(`/users/${path}`);
     } catch (E) {
-      console.error('cannot apply patch:', E);
+      return console.error('Cannot register user:', E);
     }
 
-    // save to disk
-    await rpg.commit();
-
-    return rpg._GET(path);
+    return result;
   }
 
   async _registerChannel (channel) {
@@ -764,23 +713,22 @@ class IdleRPG extends RPG {
     }
 
     let id = parts.join('/');
+    let data = { name: channel.name, service: 'idlerpg' };
+    let state = new Fabric.State(data);
+    let hash = state.id;
+
+    data.members = [];
+
     let target = pointer.escape(id);
-    let path = `/channels/${target}`;
-    let data = Object.assign({
-      id: id,
-      name: channel.name || id,
+    let path = `/channels/${hash}`;
+    let obj = Object.assign({
+      id: hash,
       members: []
-    }/*, channel */);
+    }, data);
 
-    try {
-      manager.applyPatch(rpg.state, [{ op: 'replace', path: path, value: data }]);
-    } catch (E) {
-      console.error('cannot apply patch:', E);
-    }
+    rpg.set(path, obj);
 
-    await this.commit();
-
-    return rpg._GET(path);
+    return rpg.get(path);
   }
 
   async _registerService (service) {
@@ -822,6 +770,7 @@ class IdleRPG extends RPG {
   async stop () {
     clearInterval(this.clock);
     await this.store.close();
+    await super.stop();
     return this;
   }
 }

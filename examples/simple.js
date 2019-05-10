@@ -1,18 +1,31 @@
 'use strict';
 
+const {
+  TICK_INTERVAL
+} = require('../constants');
+
 // Let's import some dependencies.
 const IdleRPG = require('../types/idlerpg');
-const game = new IdleRPG({ interval: 10000 });
+const game = new IdleRPG({
+  interval: TICK_INTERVAL,
+  path: './stores/simple'
+});
 
 // We'll join a player to the game, usually required to play.
-const name = 'Yorick';
+const yorick = require('./yorick');
 
 // Let's define our example program...
 async function main () {
+  game.on('tick', function (id) {
+    console.log('[EXAMPLES:SIMPLE]', 'tick received:', id);
+    // console.log('[EXAMPLES:SIMPLE]', 'STATE (@entity)', this['@entity']);
+    console.log('[EXAMPLES:SIMPLE]', 'STATE (state)', this['state']);
+  });
+
   // when the game's internal state changes, log some details to the console
   game.on('patches', function (patches) {
-    console.log('[EXAMPLES:SIMPLE]', 'game state changed:', patches);
-    console.log('[EXAMPLES:SIMPLE]', 'game state:', game.state);
+    // console.log('[EXAMPLES:SIMPLE]', 'game state changed:', patches);
+    // console.log('[EXAMPLES:SIMPLE]', 'game state:', game.state);
   });
 
   game.on('message', function (msg) {
@@ -32,17 +45,17 @@ async function main () {
       let status = (Math.random() > 0.1) ? 'online' : 'offline';
       // Normally, Fabric will broadcast these events when a service indicates
       // such a change.  Here, we manually change various properties.
-      let link = `/users/local~1users~1${name}`;
+      let link = `/users/local~1users~1${yorick.name}`;
       let patches = [
         { op: 'replace', path: `${link}/presence`, value: status },
         { op: 'replace', path: `${link}/online`, value: (status === 'online') }
       ];
-      console.log('patches:', patches);
+      console.log('[EXAMPLES:SIMPLE]', 'patches:', patches);
       game.fabric.emit('patches', patches);
 
       // Let's use the game's methods directly!  Here, we'll handle a transfer
       // request from Yorick to his friend.
-      await game._handleTransferRequest({
+      /* await game._handleTransferRequest({
         actor: 'Yorick',
         object: '!transfer 1 Friend',
         target: 'private',
@@ -50,7 +63,7 @@ async function main () {
           type: 'Link',
           name: 'local'
         }
-      });
+      }); */
     }, 12000);
   });
 
