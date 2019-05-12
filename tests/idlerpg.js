@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const IdleRPG = require('../lib/idlerpg');
+const IdleRPG = require('../types/idlerpg');
 
 describe('IdleRPG', function () {
   it('should expose a constructor', function () {

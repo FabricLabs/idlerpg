@@ -1,9 +1,0 @@
-[
-  { "name": "sword", "attack": 4 , "speed": 5 },
-  { "name": "cutlass", "attack": 4 , "speed": 4 },
-  { "name": "rapier", "attack": 4 , "speed": 6 },
-  { "name": "axe", "attack": 5 , "speed": 3 },
-  { "name": "dagger", "attack": 2 , "speed": 7 },
-  { "name": "hammer", "attack": 4 , "speed": 4 },
-  { "name": "halberd", "attack": 5 , "speed": 3, "range": 2 }
-]

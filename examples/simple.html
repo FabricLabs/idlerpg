@@ -1,0 +1,20 @@
+<html>
+  <h1>Simple Example: IdleRPG</h1>
+  <p>This example demonstrates IdleRPG, running in your browser.</p>
+
+  <fabric-canvas id="fabric"></fabric-canvas>
+
+  <script src="simple.js" type="text/javascript"></script>
+  <script type="text/javascript">
+    async function SimpleExample () {
+      let canvas = document.querySelector('#fabric');
+      let genesis = document.createElement('idlerpg-example');
+
+      genesis.innerHTML = '<p>Hello, world!</p>';
+
+      canvas.append(genesis);
+    }
+
+    SimpleExample();
+  </script>
+</html>

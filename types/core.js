@@ -14,7 +14,9 @@ class Core {
    * @param  {Object} config Configuration object.  Passed through to IdleRPG.
    */
   constructor (config) {
-    this.config = Object.assign({}, config);
+    this.config = Object.assign({
+      path: 'stores/idlerpg'
+    }, config);
     this.game = new IdleRPG(this.config);
     this.status = 'ready';
   }
@@ -26,11 +28,6 @@ class Core {
   async start () {
     let core = this;
 
-    // when the game emits patches, apply them to fabric state
-    core.game.on('patches', function (patches) {
-      core.game.fabric.applyPatches(patches);
-    });
-
     // log out received messages
     core.game.on('message', function (msg) {
       console.log('[CORE:MESSAGE]', msg);
@@ -38,7 +35,7 @@ class Core {
 
     // allow messages from game to change Fabric
     core.game.on('ready', function () {
-      core.game.fabric.trust(core.game);
+      // core.game.trust(core.game);
     });
 
     // start the game...

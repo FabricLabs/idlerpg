@@ -25,7 +25,7 @@ Running IdleRPG on its own:
 4. `npm start`
 
 ## Examples
-The simplest way to see IdleRPG in action is to join [`#idlerpg:verse.im`][chat],
+The simplest way to see IdleRPG in action is to join [`#idlerpg:roleplaygateway.com`][chat],
 which will automatically join you into the official public game session.  This
 channel is powered by [`idlerpg-bot`][bot], a pre-configured bot for Discord,
 Matrix, and Slack.
@@ -95,10 +95,10 @@ If this is an idea you're interested in, come join [the Fabric
 community][fabric-community]!
 
 [bot]: https://github.com/FabricLabs/idlerpg-bot
-[chat]: https://to.fabric.pub/#idlerpg:verse.im
+[chat]: https://to.fabric.pub/#idlerpg:roleplaygateway.com
 [doorman]: https://github.com/FabricLabs/doorman
 [fabric-events]: https://dev.fabric.pub/docs
-[verse-team]: https://verse.im/people
+[verse-team]: https://roleplaygateway.com/people
 [docs]: docs
 [fork-idlerpg]: https://github.com/FabricLabs/idlerpg#fork-destination-box
 [fork-idlerpg-bot]: https://github.com/FabricLabs/idlerpg-bot#fork-destination-box

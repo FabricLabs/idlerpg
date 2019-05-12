@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Documentation &middot; IdleRPG</title>
+    <script src="scripts/prettify/prettify.js"> </script>
+    <script src="scripts/prettify/lang-css.js"> </script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <link type="text/css" rel="stylesheet" href="styles/prettify-tomorrow.css">
+    <link type="text/css" rel="stylesheet" href="styles/jsdoc-default.css">
+  </head>
+  <body>
+    <div id="main">
+      <h1 class="page-title">IdleRPG</h1>
+      
+
+
+
+    
+
+
+    <h3> </h3>
+
+
+
+
+
+
+
+
+
+
+    
+
+
+
+
+    <section>
+        <article><h1>IdleRPG</h1>
+<p><a href="https://travis-ci.org/FabricLabs/idlerpg"><img src="https://img.shields.io/travis/FabricLabs/idlerpg.svg?branch=master&amp;style=flat-square" alt="Build Status"></a>
+<a href="https://coveralls.io/r/FabricLabs/idlerpg"><img src="https://img.shields.io/coveralls/FabricLabs/idlerpg.svg?style=flat-square" alt="Coverage Status"></a>
+<a href="https://github.com/FabricLabs/idlerpg/contributors"><img src="https://img.shields.io/github/contributors/FabricLabs/idlerpg.svg?style=flat-square" alt="Total Contributors"></a></p>
+<p>Simple, self-playing game intended for chat servers.</p>
+<h2>Getting Started</h2>
+<p>It is recommended to use <code>idlerpg-bot</code> to run IdleRPG as a useful service, which
+can be accomplished as follows:</p>
+<ol start="0">
+<li><a href="https://github.com/FabricLabs/idlerpg-bot#fork-destination-box">Fork <code>idlerpg-bot</code> »</a></li>
+<li><code>git clone git@github.com:YOUR_USERNAME/idlerpg-bot.git</code></li>
+<li><code>cd idlerpg-bot</code></li>
+<li><code>npm install</code></li>
+<li><code>cp config.json.sample config.json</code> then open in editor and configure</li>
+<li><code>npm start</code></li>
+</ol>
+<p>Running IdleRPG on its own:</p>
+<ol start="0">
+<li><a href="https://github.com/FabricLabs/idlerpg-bot#fork-destination-box">Fork <code>idlerpg</code> »</a></li>
+<li><code>git clone git@github.com:YOUR_USERNAME/idlerpg.git</code></li>
+<li><code>cd idlerpg</code></li>
+<li><code>npm install</code></li>
+<li><code>npm start</code></li>
+</ol>
+<h2>Examples</h2>
+<p>The simplest way to see IdleRPG in action is to join <a href="https://to.fabric.pub/#idlerpg:roleplaygateway.com"><code>#idlerpg:roleplaygateway.com</code></a>,
+which will automatically join you into the official public game session.  This
+channel is powered by <a href="https://github.com/FabricLabs/idlerpg-bot"><code>idlerpg-bot</code></a>, a pre-configured bot for Discord,
+Matrix, and Slack.</p>
+<h3>Simple Example</h3>
+<p>In the <code>examples</code> directory, you can find the following sample program:</p>
+<pre class="prettyprint source lang-js"><code>'use strict';
+
+const IdleRPG = require('idlerpg');
+const game = new IdleRPG({ interval: 1000 });
+const name = 'Yorick';
+const friend = 'Friend';
+
+async function main () {
+  game.on('patches', function (patches) {
+    game.fabric.applyPatches(patches);
+  });
+
+  game.on('message', function (msg) {
+    console.log('[MESSAGE]', msg);
+  });
+
+  game.on('ready', function () {
+    game.fabric.trust(game);
+    game.fabric.replay('log.json');
+  });
+
+  return game.start();
+}
+
+module.exports = main();
+</code></pre>
+<p>This minimal program demonstrates the full IdleRPG loop using a &quot;local&quot; service,
+including composing a local copy of the in-game state (stored in <code>game.fabric</code>).</p>
+<h3><code>idlerpg-bot</code></h3>
+<p><a href="https://github.com/FabricLabs/idlerpg-bot"><code>idlerpg-bot</code></a> is a [<a href="https://github.com/FabricLabs/doorman"><code>doorman</code></a>]-
+powered chatbot with good examples of how the underlying messaging layer
+operates, as well as how to integrate IdleRPG into your own applications.</p>
+<h2>API</h2>
+<p>IdleRPG uses <a href="https://dev.fabric.pub/docs">an event-driven API</a> to send messages between
+entities tracked by the game state.</p>
+<p>For example, registrations use the <code>join</code> event:</p>
+<pre class="prettyprint source lang-js"><code>game.fabric.emit('join', {
+  user: name,
+  channel: 'idlerpg'
+});
+</code></pre>
+<p>For detailed documentation, see <a href="docs">the <code>docs</code> folder</a>.  Happy hacking!</p>
+<h2>Next Steps</h2>
+<p>IdleRPG is an experiment in <em>swarm computing</em>, as part of an effort by <a href="https://roleplaygateway.com/people">the
+Verse team</a> to <a href="https://fabric.fm">create a serverless web</a>.  Game engines are
+complex programs, but we're starting with our own (&quot;<code>verse</code>&quot;) as a demonstration
+of how a distributed computer &amp; accompanying operating system might replace
+the need for servers altogether.</p>
+<p>If this is an idea you're interested in, come join <a href="https://fabric.pub">the Fabric
+community</a>!</p></article>
+    </section>
+
+
+
+
+
+
+    </div>
+    <nav><h2><a href="index.html">Home</a></h2><h3>Classes</h3><ul><li><a href="Core.html">Core</a></li><li><a href="IdleRPG.html">IdleRPG</a></li></ul></nav>
+    <br class="clear" />
+    <footer>
+      <a href="https://github.com/FabricLabs/idlerpg">Source Code</a> &middot; <a href="/">Documentation</a> &middot; <a href="https://to.matrix.pub/#idlerpg:roleplaygateway.com">Play</a> &middot; <a href="https://to.fabric.pub/#idlerpg:matrix.org">Chat</a>
+    </footer>
+    <script type="text/javascript">
+      prettyPrint();
+    </script>
+    <script src="scripts/linenumber.js"></script>
+  </body>
+</html>
