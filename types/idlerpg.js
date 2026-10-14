@@ -242,8 +242,12 @@ class IdleRPG extends Service {
     const users = this.content.users;
     if (!users[id]) {
       users[id] = { id, name: name || id, presence: 'offline', channels: {}, since: null };
-    } else if (name && users[id].name === id) {
+    } else if (name && users[id].name !== name) {
       users[id].name = name;
+    }
+    if (name && name !== id && this.content.players[id] && this.content.players[id].name !== name) {
+      this.content.players[id].name = name;
+      this._dirty = true;
     }
     return users[id];
   }
@@ -252,6 +256,9 @@ class IdleRPG extends Service {
     const players = this.content.players;
     if (!players[id]) {
       players[id] = new Player({ id, name, firstSeen: new Date(this.now).toISOString() }).toObject();
+      this._dirty = true;
+    } else if (name && name !== id && players[id].name !== name) {
+      players[id].name = name;
       this._dirty = true;
     }
     return players[id];
