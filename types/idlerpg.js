@@ -1,778 +1,527 @@
 'use strict';
 
-// ## IdleRPG Core
-// A walkthrough of the Fabric API paired with a working example.
+// ## IdleRPG
+// A game which rewards participants for remaining present (and idle). The
+// engine is a `@fabric/core` Service: it owns the game state, persists it in
+// a Fabric Store, and exposes a small input API (`_registerUser`,
+// `_handleJoin`, `_handlePart`, `_handlePresence`, `_handleMessage`) that any
+// host — Doorman, a test, a script — drives. Nothing here speaks to a chat
+// network directly; see `services/idlerpg.js` for the Doorman adapter.
 
-// ### Configuration
-const config = require('../config');
+const Service = require('@fabric/core/types/service');
+const Player = require('./player');
 
-// CONSTANTS
-// We use the following pattern for storing information that DOES NOT CHANGE.
 const {
   PER_TICK_CAPITAL,
   PER_TICK_EXPERIENCE,
   TICK_INTERVAL,
-  ENCOUNTER_CHANCE
+  ENCOUNTER_CHANCE,
+  RETENTION_DAYS
 } = require('../constants');
 
-// ### Dependencies
-// Fabric is designed to reduce dependency on external libraries.  At the top of
-// every file is the dependency list, specifying outstanding requirements.
-const article = require('indefinite-article');
-const manager = require('fast-json-patch');
-const pointer = require('json-pointer');
-const schedule = require('node-schedule');
+const STORE_KEY = '/idlerpg';
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
-// ### Fabric Core
-// IdleRPG is a demonstration of [Fabric](https://fabric.pub), a peer-to-peer
-// protocol for running decentralized applications.  Read the docs!
-//
-// After including `@fabric/core`, we import RPG, a template class for designing
-// & building role-playing games (RPGs).
-const Fabric = require('@fabric/core');
-const RPG = require('@fabric/rpg');
+function dayKey (ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function windowDays (now, days) {
+  const keys = [];
+  for (let i = 0; i < days; i++) keys.push(dayKey(now - i * DAY_MS));
+  return keys;
+}
+
+function round1 (n) {
+  return Math.round(n * 10) / 10;
+}
 
 /**
- * Generic IdleRPG definition.
+ * Generic IdleRPG engine.
+ * @fires IdleRPG#tick Once per clock cycle with `{ clock, presentNow, now }`.
+ * @fires IdleRPG#message Announcements `{ actor, object, target }` for the host to deliver.
+ * @fires IdleRPG#whisper Private notices `{ target, object }`.
  */
-class IdleRPG extends RPG {
+class IdleRPG extends Service {
   /**
-   * Implements a Game Engine which runs an instance of IdleRPG.
-   * @param {Object} config Settings for IdleRPG to use.
-   * @param {Number} config.interval Tick interval (in milliseconds).
-   * @param {Number} config.luck How likely is an encounter? % chance, 0-1
-   * @return {IdleRPG} Instance of IdleRPG.
+   * @param {Object} [settings]
+   * @param {string} [settings.name='idlerpg']
+   * @param {string} [settings.path='stores/idlerpg'] Store directory.
+   * @param {boolean} [settings.persistent=true] Persist state to the Store.
+   * @param {number} [settings.interval=600000] Tick interval in milliseconds (`tickMs` alias).
+   * @param {number} [settings.luck=0.05] Encounter chance per rewarded tick (0-1).
+   * @param {Array<string>} [settings.channels=[]] Channel allowlist (empty = every channel counts).
+   * @param {boolean} [settings.penalties=true] Slash wealth for chatting in a game channel.
+   * @param {boolean} [settings.autostart=true] Run the tick clock on `start()`.
+   * @param {number} [settings.retentionDays=90] Day buckets kept.
+   * @param {Function} [settings.now] Clock (tests).
    */
   constructor (settings = {}) {
-    super(settings);
-
-    this.config = Object.assign({
+    const { interval, tickMs, ...rest } = settings;
+    super(Object.assign({
       name: 'idlerpg',
       path: 'stores/idlerpg',
-      alias: '@idlerpg:roleplaygateway.com',
-      channels: ['idlerpg'],
-      services: ['local'],
-      interval: TICK_INTERVAL,
+      persistent: true,
+      networking: false
+    }, rest));
+
+    this.settings = Object.assign({
+      alias: 'idlerpg',
+      channels: [],
       luck: ENCOUNTER_CHANCE,
-      PER_TICK_CAPITAL: PER_TICK_CAPITAL,
-      PER_TICK_EXPERIENCE: PER_TICK_EXPERIENCE,
-      debug: config.debug
-    }, settings);
-
-    this.channels = [];
-    this.stack = [];
-
-    // ### Our Game State
-    // The Game State holds all information necessary to reconstruct your game.
-    // We use human-friendly names and keep things as small as possible, so do
-    // your part in keeping this well-maintained!
-    this.state = {
-      channels: {}, // stores a list of channels.
-      players: {}, // players are users... !
-      services: {}, // services are networks
-      users: {} // users are network clients
-    };
-
-    // pre-loading Fabric
-    this.fabric = new Fabric({
-      services: this.config.services
+      perTickCapital: PER_TICK_CAPITAL,
+      perTickExperience: PER_TICK_EXPERIENCE,
+      penalties: true,
+      autostart: true,
+      retentionDays: RETENTION_DAYS,
+      now: () => Date.now()
+    }, this.settings, rest, {
+      tickMs: Number(tickMs != null ? tickMs : (interval != null ? interval : TICK_INTERVAL))
     });
 
-    // configure our own observer
-    this.observer = manager.observe(this.state);
+    this._state.content = {
+      users: {},
+      players: {},
+      channels: {},
+      stats: { totalPresentMs: 0, totalTicks: 0, days: {}, lastTick: null, startedAt: null }
+    };
 
-    // these are the configurable commands.
-    this.triggers = [
-      { name: 'online', value: this._handleOnlineRequest },
-      { name: 'memberlist', value: this._handleMemberlistRequest },
-      { name: 'play', value: this._handlePlayRequest },
-      { name: 'profile', value: this._handleProfileRequest },
-      { name: 'inventory', value: this._handleInventoryRequest },
-      { name: 'leaderboard', value: this._handleLeaderboardRequest },
-      { name: 'transfer', value: this._handleTransferRequest },
-      { name: 'balance', value: this._handleBalanceRequest }
-    ];
+    this.clock = null;
+    this._dirty = false;
 
-    this['@entity'] = this.state;
+    // Command handlers exposed to hosts (Doorman maps these to `!triggers`).
+    this.triggers = {
+      online: { name: 'online', value: this._handleOnlineRequest.bind(this) },
+      memberlist: { name: 'memberlist', value: this._handleMemberlistRequest.bind(this) },
+      profile: { name: 'profile', value: this._handleProfileRequest.bind(this) },
+      leaderboard: { name: 'leaderboard', value: this._handleLeaderboardRequest.bind(this) },
+      balance: { name: 'balance', value: this._handleBalanceRequest.bind(this) },
+      transfer: { name: 'transfer', value: this._handleTransferRequest.bind(this) }
+    };
 
     return this;
   }
 
-  replay (path) {
-    let events = null;
-
-    try {
-      events = require(`../data/${path}`);
-    } catch (E) {
-      console.error('Could not load replay:', path, E);
-    }
-
-    if (events) {
-      console.log('replaying log:', events);
-      for (let i = 0; i < events.length; i++) {
-        this.fabric.emit(events[i].type, events[i]);
-      }
-    }
+  get content () {
+    return this._state.content;
   }
 
-  /**
-   * Entry point for running IdleRPG.  Creates a datastore, subscribes to events,
-   * initializes the clock, and emits a "ready" event when complete.
-   * @return {IdleRPG} Chainable method.
-   */
+  get now () {
+    return this.settings.now();
+  }
+
+  // ### Lifecycle
+
   async start () {
     await super.start();
-
-    console.log('IdleRPG starting...');
-    this.log('Start state:', this.state);
-
-    let rpg = this;
-
-    rpg.fabric.on('join', rpg._handleJoin.bind(rpg));
-    rpg.fabric.on('part', rpg._disjoinPlayer.bind(rpg));
-    rpg.fabric.on('user', rpg._registerUser.bind(rpg));
-    rpg.fabric.on('channel', rpg._registerChannel.bind(rpg));
-    rpg.fabric.on('message', rpg._handleMessage.bind(rpg));
-    rpg.fabric.on('service', rpg._registerService.bind(rpg));
-    rpg.fabric.on('patch', rpg._handlePatch.bind(rpg));
-    rpg.fabric.on('patches', rpg._handlePatches.bind(rpg));
-
-    for (let name in rpg.fabric.services) {
-      let service = rpg.fabric.services[name];
-      service.once('ready', async function () {
-        console.log('[IDLERPG]', 'service ready:', name);
-        for (let i in rpg.config.channels) {
-          let channel = rpg.config.channels[i];
-          let members = [];
-          let present = false;
-
-          try {
-            members = await service._getMembers(channel);
-          } catch (E) {
-            rpg.error(`Couldn't get members for "${channel}":`, E);
-          }
-
-          if (members) {
-            rpg.channels.push(channel);
-            present = members.includes(service.self.id);
-          }
-
-          if (!present) {
-            await service.join(channel);
-          }
-        }
-      });
+    await this._restore();
+    if (!this.content.stats.startedAt) this.content.stats.startedAt = new Date(this.now).toISOString();
+    if (this.settings.autostart && this.settings.tickMs > 0) {
+      this.clock = setInterval(() => {
+        this.tick().catch((error) => this.emit('error', `[IDLERPG] tick: ${error && error.message ? error.message : error}`));
+      }, this.settings.tickMs);
+      if (typeof this.clock.unref === 'function') this.clock.unref();
     }
-
-    rpg.clock = setInterval(function () {
-      try {
-        rpg.tick();
-      } catch (E) {
-        console.error('error ticking:', E);
-      }
-    }, this.config.interval);
-
-    // TODO: document & test
-    rpg.newsletter = schedule.scheduleJob('0 0 9 * * *', async function () {
-      let leaderboard = await rpg._handleLeaderboardRequest();
-      rpg.announce(`A rooster crows in the distance, signalling the break of dawn.  ${leaderboard}`);
-    });
-
-    rpg.emit('ready');
-
-    return rpg;
+    this.emit('ready');
+    return this;
   }
 
+  async stop () {
+    if (this.clock) clearInterval(this.clock);
+    this.clock = null;
+    await this._persist();
+    await super.stop();
+    return this;
+  }
+
+  async _restore () {
+    if (!this.store) return;
+    let prior = null;
+    try { prior = await this.store.get(STORE_KEY); } catch (_) { prior = null; }
+    if (typeof prior === 'string') {
+      try { prior = JSON.parse(prior); } catch (_) { prior = null; }
+    }
+    if (!prior || typeof prior !== 'object') return;
+    const content = this.content;
+    content.users = prior.users || {};
+    content.players = prior.players || {};
+    content.channels = prior.channels || {};
+    content.stats = Object.assign(content.stats, prior.stats || {});
+    if (!content.stats.days) content.stats.days = {};
+    // Nobody is known to be present after a restart until the host says so.
+    for (const user of Object.values(content.users)) {
+      user.presence = 'offline';
+      user.channels = {};
+    }
+  }
+
+  async _persist () {
+    if (!this.store || !this.store.db) return;
+    this._dirty = false;
+    try {
+      await this.store.set(STORE_KEY, this.content);
+    } catch (error) {
+      this.emit('error', `[IDLERPG] persist: ${error && error.message ? error.message : error}`);
+    }
+  }
+
+  // ### Clock
+
   /**
-   * Clock frame.  Called once per cycle (tick).
-   * @fires {IdleRPG#tick} Emitted once the clock cycle is complete.
-   * @return {IdleRPG} Chainable method.
+   * One clock cycle: every present player is credited `tickMs` of presence
+   * plus the per-tick rewards; global and per-day statistics are updated.
+   * @returns {Promise<IdleRPG>}
    */
   async tick () {
-    await super.tick();
+    const now = this.now;
+    const day = dayKey(now);
+    const stats = this.content.stats;
+    const bucket = this._bucket(day);
+    const present = this._presentUsers();
 
-    console.debug('[IDLERPG]', `Beginning tick: ${new Date()}`);
-
-    let rpg = this;
-    let active = await rpg._getActivePlayers().catch(function errorHandler (E) {
-      console.error('[IDLERPG]', 'Could not get active players:', E);
-    });
-
-    console.log('active players:', active);
-
-    // TODO: determine validity from signatures
-    // sum all transaction signatures to achieve single-signature per block
-    for (let i in active) {
-      await rpg._computeRound(active[i]);
+    for (const user of present) {
+      const player = this._player(user.id, user.name);
+      const before = new Player(player);
+      const outcome = before.reward(this.settings.tickMs, this.settings);
+      Object.assign(player, before.toObject());
+      player.lastSeen = new Date(now).toISOString();
+      bucket.presentMs += this.settings.tickMs;
+      bucket.players[user.id] = 1;
+      stats.totalPresentMs += this.settings.tickMs;
+      if (outcome.leveled) this.announce(`${player.name} has reached level ${outcome.level}!`);
+      this._rollForEncounter(player);
     }
 
-    let id = await this.save();
+    bucket.ticks += 1;
+    bucket.peak = Math.max(bucket.peak, present.length);
+    stats.totalTicks += 1;
+    stats.lastTick = new Date(now).toISOString();
+    this._pruneDays(now);
 
-    console.debug('[IDLERPG]', `tick ${id} complete: ${new Date()}`);
-    // console.debug('[IDLERPG]', `tick state:`, this.state);
+    await this._persist();
+    this.emit('tick', { clock: stats.totalTicks, presentNow: present.length, now });
+    return this;
+  }
 
-    this.emit('tick', id);
+  _bucket (day) {
+    const days = this.content.stats.days;
+    if (!days[day]) days[day] = { presentMs: 0, peak: 0, ticks: 0, players: {} };
+    return days[day];
+  }
 
-    return rpg;
+  _pruneDays (now) {
+    const keep = new Set(windowDays(now, this.settings.retentionDays));
+    for (const key of Object.keys(this.content.stats.days)) {
+      if (!keep.has(key)) delete this.content.stats.days[key];
+    }
+  }
+
+  _rollForEncounter (player) {
+    if (!(Math.random() < this.settings.luck)) return null;
+    const loot = Math.ceil(Math.random() * this.settings.perTickCapital * 5);
+    player.wealth += loot;
+    this.announce(`${player.name} stumbled upon a hidden cache in their travels and looted **${loot}** gold.`);
+    return { type: 'loot', loot };
+  }
+
+  // ### Inputs
+
+  _channelAllowed (channel) {
+    const list = this.settings.channels || [];
+    if (!list.length) return true;
+    if (!channel) return false;
+    const leaf = String(channel).split('/').pop().toLowerCase();
+    return list.some((entry) => {
+      const wanted = String(entry).toLowerCase();
+      return wanted === String(channel).toLowerCase() || wanted === leaf || wanted === `#${leaf}`;
+    });
+  }
+
+  _user (id, name) {
+    const users = this.content.users;
+    if (!users[id]) {
+      users[id] = { id, name: name || id, presence: 'offline', channels: {}, since: null };
+    } else if (name && users[id].name === id) {
+      users[id].name = name;
+    }
+    return users[id];
+  }
+
+  _player (id, name) {
+    const players = this.content.players;
+    if (!players[id]) {
+      players[id] = new Player({ id, name, firstSeen: new Date(this.now).toISOString() }).toObject();
+      this._dirty = true;
+    }
+    return players[id];
+  }
+
+  _presentUsers () {
+    return Object.values(this.content.users).filter((user) => user.presence === 'online' && user.id !== this.settings.alias);
   }
 
   /**
-   * Commit to the current game state.  Writes state to disk, then broadcasts any
-   * outstanding changes.
-   * @fires {IdleRPG#patches} An array of changes since the last commit.
-   * @return {Boolean} Indicates successful commit.
+   * @param {Object} user `{ id, name?, online? }`
    */
-  async commit () {
-    let rpg = this;
-    let ops = [
-      { type: 'put', key: '/', value: JSON.stringify(this.state) }
-    ];
-
-    for (let name in rpg.state) {
-      let op = { type: 'put', key: `/${name}`, value: JSON.stringify(rpg.state[name]) };
-      ops.push(op);
-    }
-
-    return this.store.batch(ops, function shareChanges () {
-      let patches = manager.generate(rpg.observer);
-      if (patches.length) rpg.emit('patches', patches);
-    });
+  async _registerUser (user) {
+    if (!user || !user.id) return null;
+    const record = this._user(user.id, user.name);
+    if (user.online === true || user.presence === 'online') await this._handlePresence({ user: user.id, status: 'online' });
+    this._dirty = true;
+    return record;
   }
 
-  async _computeRound (player) {
-    let rpg = this;
-    console.log('computing round for player:', player);
-    let profile = await rpg._getProfile(player.sharing[0]).catch(function (E) {
-      console.error('Could not get profile:', E);
-    });
-
-    console.log('profile:', profile);
-    if (!profile) return false;
-
-    // relax the cooldown...
-    if (profile.cooldown) {
-      profile.cooldown = profile.cooldown - rpg.config.PER_TICK_CAPITAL;
-    }
-
-    let user = rpg.get(`/users/${profile.path}`);
-    if (user.presence === 'online') {
-      await rpg.reward(profile);
-    }
-
-    console.log('round computed:', profile);
-
-    return profile;
-  }
-
-  async announce (message) {
-    let rpg = this;
-    for (let name in rpg.fabric.services) {
-      for (let i in rpg.channels) {
-        this.emit('message', {
-          actor: this.actor,
-          object: message,
-          target: [name, 'channels', rpg.channels[i]].join('/')
-        });
-      }
-    }
-  }
-
-  async _rollForEncounter (instance) {
-    let rpg = this;
-    let result = null;
-    let player = Object.assign({}, instance);
-
-    if (Math.random() < rpg.config.luck) {
-      let encounter = new RPG.Encounter(player);
-
-      result = Object.assign({}, player, encounter.entity);
-
-      switch (encounter.type) {
-        case 'blessing':
-          rpg.announce(`${player.name} has been blessed by the Gods!  Good fortune lies ahead.`);
-          break;
-        case 'monster':
-          // TODO: random phrasing
-          rpg.announce(`${player.name} came upon a wild ${encounter.state.monster.name} in their adventures!  The fight raged on, but in the end ${player.name} prevailed. **${encounter.state.loot}** gold was looted from the dead corpse.`);
-          break;
-        case 'item':
-          let claim = `${player.name} found a discarded ${encounter.state.item.name}`;
-          if (encounter.state.equipped) {
-            claim += `, which they have equipped as their main weapon.`;
-          } else if (encounter.state.skipped) {
-            claim += `, but discarded it as they were carrying too much already.`;
-          } else {
-            claim += `.  They now have **${player.data.inventory.length}** items in their inventory.`;
-          }
-          rpg.announce(claim);
-          break;
-      }
-    }
-
-    return result;
-  }
-
-  async reward (player) {
-    let rpg = this;
-
-    console.log('rewarding:', player);
-    let instance = await rpg._rollForEncounter(player);
-
-    console.log('instance:', instance);
-
-    if (instance) {
-      Object.assign(player, instance);
-    }
-
-    // snapshot initial state
-    let prior = new RPG.Entity(player);
-
-    // primary updates
-    player.data.wealth = (player.data.wealth || 0) + PER_TICK_CAPITAL;
-    player.data.experience = (player.data.experience || 0) + PER_TICK_EXPERIENCE;
-
-    // sample the contents
-    let sample = new RPG.Entity(player);
-    let state = new Fabric.State({ name: player.name });
-
-    if (sample.level && sample.level > prior.level) {
-      rpg.announce(`${player.name} has reached level ${sample.level}!`);
-    }
-
-    this.set(`/players/${state.id}`, player);
-
-    return this.get(`/players/${state.id}`);
-  }
-
-  async penalize (player) {
-    let notify = false;
-    let target = pointer.escape(player.id);
-
-    if (!player.cooldown || player.cooldown < 100) {
-      notify = true;
-    }
-
-    player.cooldown = 1000;
-    player.wealth = player.wealth * 0.5; // slashed!
-
-    manager.applyPatch(this.state, [
-      { op: 'replace', path: `/players/${target}/cooldown`, value: player.cooldown },
-      { op: 'replace', path: `/players/${target}/wealth`, value: player.wealth }
-    ]);
-
-    await this.commit();
-
-    if (notify) {
-      this.announce(`${player.name} has disrupted the peace!  Penalties have been applied, but life goes on.`);
-    }
+  async _registerChannel (channel) {
+    if (!channel || !channel.id) return null;
+    const channels = this.content.channels;
+    if (!channels[channel.id]) channels[channel.id] = { id: channel.id, name: channel.name || channel.id, members: {} };
+    this._dirty = true;
+    return channels[channel.id];
   }
 
   /**
-   * Get a {@link Player} profile by ID.
-   * @param  {String} id Player ID.
-   * @return {Player}    Instance of the {@link Player} object.
+   * @param {Object} join `{ user, channel }`
    */
-  async _getProfile (id) {
-    let rpg = this;
-    let player = rpg.get(`/players/${id}`);
-    let user = rpg.get(`/users/${player.path}`);
-    let data = user;
-
-    console.log('get profile got player by name:', player.name);
-
-    let state = new Fabric.State({ name: player.name });
-    let profile = Object.assign({
-      id: state.id,
-      name: data.name,
-      path: data.path,
-      presence: user.presence || 'offline',
-      data: {}
-    }, player);
-
-    // #### GAME STATS
-    profile.data.health = player.data.health || 100;
-    profile.data.stamina = player.data.stamina || 100;
-    profile.data.experience = player.data.experience || 0;
-    profile.data.inventory = player.data.inventory || [];
-    profile.data.effects = player.data.effects || {};
-    profile.data.wealth = player.data.wealth || 0;
-
-    // #### CHARACTER EQUIPMENT
-    profile.data.equipment = Object.assign({}, player.data.equipment, {
-      weapon: player.data.weapon || null
-    });
-
-    return profile;
+  async _handleJoin (join) {
+    if (!join || !join.user) return null;
+    return this._handlePresence({ user: join.user, status: 'online', channel: join.channel });
   }
 
-  async _handlePlayRequest (message) {
-    return `Join #idlerpg:roleplaygateway.com to play.  Permalink: https://to.fabric.pub/#idlerpg:roleplaygateway.com`;
+  /**
+   * @param {Object} part `{ user, channel }`
+   */
+  async _handlePart (part) {
+    if (!part || !part.user) return null;
+    return this._handlePresence({ user: part.user, status: 'offline', channel: part.channel });
+  }
+
+  /**
+   * Presence change. A user is present while they are online in at least one
+   * allowed channel (or, for channel-less adapters, while simply online).
+   * @param {Object} presence `{ user, status: 'online'|'offline', channel? }`
+   */
+  async _handlePresence (presence) {
+    if (!presence || !presence.user) return null;
+    const user = this._user(presence.user);
+    const channel = presence.channel || null;
+    const wasOnline = user.presence === 'online';
+
+    if (presence.status === 'online') {
+      if (channel) {
+        if (!this._channelAllowed(channel)) return user;
+        await this._registerChannel({ id: channel });
+        this.content.channels[channel].members[user.id] = 1;
+        user.channels[channel] = 1;
+      } else if (!this._channelAllowed(null)) {
+        return user;
+      }
+      user.presence = 'online';
+      if (!wasOnline) {
+        user.since = this.now;
+        const player = this._player(user.id, user.name);
+        if (!player.ticks) await this._welcomePlayer(player);
+      }
+    } else {
+      if (channel) {
+        delete user.channels[channel];
+        if (this.content.channels[channel]) delete this.content.channels[channel].members[user.id];
+      } else {
+        for (const id of Object.keys(user.channels)) {
+          if (this.content.channels[id]) delete this.content.channels[id].members[user.id];
+        }
+        user.channels = {};
+      }
+      if (!Object.keys(user.channels).length) {
+        user.presence = 'offline';
+        user.since = null;
+      }
+    }
+
+    this._dirty = true;
+    return user;
+  }
+
+  /**
+   * Chat inside a game channel breaks the silence rule.
+   * @param {Object} message `{ actor, target, object }`
+   */
+  async _handleMessage (message) {
+    if (!this.settings.penalties || !message || !message.actor || !message.target) return null;
+    if (!this.content.channels[message.target]) return null;
+    if (!this._channelAllowed(message.target)) return null;
+    if (typeof message.object === 'string' && message.object.trim().startsWith('!')) return null;
+    const player = this.content.players[message.actor];
+    if (!player) return null;
+    const record = new Player(player);
+    const { notify } = record.penalize();
+    Object.assign(player, record.toObject());
+    this._dirty = true;
+    if (notify) this.announce(`${player.name} has disrupted the peace!  Penalties have been applied, but life goes on.`);
+    return player;
+  }
+
+  async _welcomePlayer (player) {
+    this.announce(`Welcome to IdleRPG, ${player.name}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
+  }
+
+  /**
+   * Emit an announcement for every known game channel.
+   * @param {string} text
+   */
+  announce (text) {
+    for (const channel of Object.keys(this.content.channels)) {
+      this.emit('message', { actor: this.settings.alias, object: text, target: channel });
+    }
+  }
+
+  // ### Reports
+
+  /**
+   * Aggregate presence statistics — never user ids.
+   * @returns {Object}
+   */
+  report () {
+    const now = this.now;
+    const stats = this.content.stats;
+    const window = (days) => {
+      const keys = windowDays(now, days);
+      const players = new Set();
+      let presentMs = 0;
+      let peak = 0;
+      for (const key of keys) {
+        const bucket = stats.days[key];
+        if (!bucket) continue;
+        presentMs += bucket.presentMs;
+        peak = Math.max(peak, bucket.peak);
+        for (const id of Object.keys(bucket.players)) players.add(id);
+      }
+      return { hours: round1(presentMs / HOUR_MS), players: players.size, peak };
+    };
+    const players = Object.values(this.content.players);
+    const levels = {};
+    for (const player of players) {
+      const level = new Player(player).level;
+      levels[level] = (levels[level] || 0) + 1;
+    }
+    return {
+      generatedAt: new Date(now).toISOString(),
+      presentNow: this._presentUsers().length,
+      uniquePlayers: players.length,
+      totalPresentHours: round1(stats.totalPresentMs / HOUR_MS),
+      totalTicks: stats.totalTicks,
+      tickMs: this.settings.tickMs,
+      lastTick: stats.lastTick,
+      startedAt: stats.startedAt,
+      last7Days: window(7),
+      last30Days: window(30),
+      levels,
+      history: windowDays(now, 30).reverse().map((day) => {
+        const bucket = stats.days[day] || { presentMs: 0, peak: 0, players: {} };
+        return { day, hours: round1(bucket.presentMs / HOUR_MS), players: Object.keys(bucket.players).length, peak: bucket.peak };
+      })
+    };
+  }
+
+  /**
+   * Public leaderboard: display names and game numbers only — no service ids.
+   * @param {number} [limit=50]
+   * @returns {Array<Object>}
+   */
+  leaderboard (limit = 50) {
+    const users = this.content.users;
+    const rows = Object.values(this.content.players)
+      .filter((record) => record.id !== this.settings.alias)
+      .map((record) => {
+        const player = new Player(record);
+        const user = users[record.id];
+        return {
+          name: player.name === player.id ? 'Unknown pilot' : player.name,
+          level: player.level,
+          experience: player.experience,
+          wealth: player.wealth,
+          hours: round1(player.presenceMs / HOUR_MS),
+          ticks: player.ticks,
+          firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
+          lastSeen: player.lastSeen ? player.lastSeen.slice(0, 10) : null,
+          online: !!(user && user.presence === 'online')
+        };
+      })
+      .sort((a, b) => b.experience - a.experience || b.hours - a.hours || a.name.localeCompare(b.name));
+    const max = Number(limit) > 0 ? Math.floor(Number(limit)) : rows.length;
+    return rows.slice(0, max).map((row, index) => Object.assign({ rank: index + 1 }, row));
+  }
+
+  // ### Commands
+
+  _profileFor (actor) {
+    const record = this.content.players[actor];
+    return record ? new Player(record) : null;
+  }
+
+  async _handleOnlineRequest () {
+    const online = this._presentUsers().map((user) => user.name);
+    return `Currently present (${online.length}):\n\n\`\`\`\n${JSON.stringify(online, null, '  ')}\n\`\`\``;
+  }
+
+  async _handleMemberlistRequest () {
+    const members = Object.values(this.content.players).map((player) => player.name);
+    return `Current memberlist for the \`idlerpg\` plugin:\n\n\`\`\`\n${JSON.stringify(members, null, '  ')}\n\`\`\``;
   }
 
   async _handleProfileRequest (message) {
-    let rpg = this;
-    let profile = await rpg._getProfile(message.actor);
-    let entity = new Entity(profile);
-    let effects = Object.keys(entity.effects);
-    let equipment = profile.equipment;
-    let response = `You are level **${entity.level}** (having earned **${profile.experience}** experience), with **${profile.stamina}** stamina, **${profile.health}** health, and **${profile.wealth}** <small>IDLE</small> in wealth.`;
-
-    if (equipment.weapon) {
-      response += `  Your current weapon is ${article(equipment.weapon.name)} **${equipment.weapon.name}**, which has **${equipment.weapon.attack}** attack and **${equipment.weapon.durability}** durability.`;
-    }
-
-    if (effects.length) {
-      response += `  You are currently ${effects[0]}.`;
-    } else {
-      response += `  No special statuses are currently applied.`;
-    }
-
-    return response;
-  }
-
-  async _handleInventoryRequest (message) {
-    let rpg = this;
-    let profile = await rpg._getProfile(message.actor);
-    if (!profile.inventory.length) return `You have no items in your inventory.`;
-    let response = `Your inventory:`;
-
-    for (let i in profile.inventory) {
-      let item = profile.inventory[i];
-      response += `\n- ${article(item.name)} **${item.name}**, with **${item.attack}** attack and **${item.durability}** durability`;
-    }
-
-    return response;
+    const player = this._profileFor(message && message.actor);
+    if (!player) return `You have not played yet.  Stay present in a game channel to begin.`;
+    return `You are level **${player.level}** (having earned **${player.experience}** experience) with **${player.wealth}** <small>IDLE</small> in wealth, after **${round1(player.presenceMs / HOUR_MS)}** hours present.`;
   }
 
   async _handleBalanceRequest (message) {
-    let rpg = this;
-    let profile = await rpg._getProfile(message.actor);
-    let response = `Your current balance is **${profile.wealth}** <small>IDLE</small>.  You can use \`!transfer <amount> <user>\` to transfer an amount to another user by ID (i.e., \`@eric:ericmartindale.com\`)`;
-    return response;
+    const player = this._profileFor(message && message.actor);
+    if (!player) return `You have no balance yet.`;
+    return `Your current balance is **${player.wealth}** <small>IDLE</small>.  Use \`!transfer <amount> <user>\` to send some to another player.`;
+  }
+
+  async _handleLeaderboardRequest () {
+    const list = Object.values(this.content.players)
+      .sort((a, b) => b.experience - a.experience)
+      .slice(0, 10)
+      .map((player, n) => `${n + 1}. ${player.name}, with **${player.experience}** experience`);
+    return `Leaderboard:\n${list.join('\n')}`;
   }
 
   async _handleTransferRequest (message) {
-    let rpg = this;
+    if (!message || typeof message.object !== 'string' || typeof message.actor !== 'string') return `Command format: \`!transfer <amount> <user>\``;
+    const parts = message.object.trim().split(/\s+/);
+    const index = parts.findIndex((part) => part.toLowerCase() === '!transfer');
+    const amount = parseInt(parts[index + 1], 10);
+    const targetName = parts[index + 2];
+    if (!Number.isFinite(amount) || amount <= 0 || !targetName) return `Command format: \`!transfer <amount> <user>\``;
 
-    if (!message.object) return `Transfer message must have property "object".`;
-    if (!message.actor) return `Transfer message must have property "actor".`;
-    if (!(typeof message.object === 'string')) return `Transfer message property "object" must be a string.`;
-    if (!(typeof message.actor === 'string')) return `Transfer message property "actor" must be a string.`;
+    const actor = this.content.players[message.actor];
+    if (!actor) return `You have no wealth to transfer.`;
 
-    let parts = (message.object).split(' ');
+    const prefix = message.actor.split('/').slice(0, 2).join('/');
+    const target = this.content.players[targetName] ||
+      this.content.players[`${prefix}/${targetName}`] ||
+      Object.values(this.content.players).find((player) => player.name === targetName);
+    if (!target) return `Couldn't find ${targetName}.`;
+    if (target.id === actor.id) return `You cannot transfer money to yourself.`;
+    if (actor.wealth - amount < 0) return `You do not have that amount.  You'll need **${amount - actor.wealth}** more <small>IDLE</small>.`;
 
-    if (parts.length < 3) return `Command format: \`!transfer <amount> <user>\``;
-    if (message.actor.split('/')[2] === parts[2]) return `You cannot transfer money to yourself.`;
+    actor.wealth -= amount;
+    target.wealth += amount;
+    this._dirty = true;
+    await this._persist();
 
-    console.log('handling transfer request:', message);
-    let from = `${message.origin.name.toLowerCase()}/users/${message.actor}`;
-
-    console.log('inferred from:', from);
-
-    let actorState = new Fabric.State({ name: message.actor });
-    let actorParts = [actorState.id, actorState.render()];
-
-    let targetState = new Fabric.State({ name: parts[2] });
-    let targetParts = [targetState.id, targetState.render()];
-
-    let actor = rpg.get(`/players/${actorParts[0]}`);
-    let target = rpg.get(`/players/${targetParts[0]}`);
-    let amount = parseInt(parts[1]);
-    // TODO: handle memo
-
-    let actorID = pointer.escape(actor.id);
-    let targetID = pointer.escape(target.id);
-
-    if (!target) return `Couldn't find ${message.target}`;
-    if (!actor.data.wealth) return `You have no wealth to transfer.`;
-    if (parseInt(actor.data.wealth - amount) < 0) return `You do not have that amount.  You'll need **${parseInt(actor.data.wealth - amount)}** more <small>IDLE</small> to proceed with this transfer.`;
-
-    await rpg._registerPlayer(actor);
-    await rpg._registerPlayer(target);
-
-    try {
-      // TODO: FUSE filesystem
-      let ops = [
-        {
-          op: 'replace',
-          path: `/players/${actorID}/wealth`,
-          value: parseInt(actor.data.wealth) - parseInt(amount)
-        },
-        {
-          op: 'replace',
-          path: `/players/${targetID}/wealth`,
-          value: parseInt(targe.datat.wealth) + parseInt(amount)
-        }
-      ];
-
-      manager.applyPatch(rpg.state, ops);
-    } catch (E) {
-      console.error('[IDLERPG]', 'could not serialize transaction:', E);
-      return `Could not complete your transfer request at this time: ${E}`;
-    }
-
-    await rpg.commit();
-
-    rpg.emit('whisper', {
+    this.emit('whisper', {
       target: target.id,
-      message: `${actor.name} (${actor.id}) has transferred **${amount}** <small>IDLE</small> to your account!  You can check your balance now with a \`!balance\` inquiry.`
+      object: `${actor.name} has transferred **${amount}** <small>IDLE</small> to your account!  Check your balance with \`!balance\`.`
     });
 
     return `Balance transferred successfully!`;
   }
-
-  async _handleOnlineRequest () {
-    let rpg = this;
-    let list = await rpg._getActivePlayers();
-    let online = list.map(x => x.name);
-    return `Current online members for the \`idlerpg\` plugin:\n\n\`\`\`\n${JSON.stringify(online, null, '  ')}\n\`\`\``;
-  }
-
-  async _handleMemberlistRequest () {
-    let rpg = this;
-    let list = await rpg._getPlayers();
-    let members = list.map(x => x.name);
-
-    return `Current memberlist for the \`idlerpg\` plugin:\n\n\`\`\`\n${JSON.stringify(members, null, '  ')}\n\`\`\``;
-  }
-
-  async _handleLeaderboardRequest () {
-    let rpg = this;
-    let list = await rpg._getPlayers();
-
-    list.sort(function (a, b) {
-      return b.data.experience - a.data.experience;
-    });
-
-    let members = list.map((x, n) => {
-      return `${n}. ${x.name}, with **${x.data.experience}** experience`;
-    }).slice(0, 10);
-
-    try {
-      rpg._PUT('/leaderboard', members);
-    } catch (E) {
-      rpg.error('Could not save leaderboard:', E);
-    }
-
-    return `Leaderboard:\n${members.join('\n')}`;
-  }
-
-  async _getPresence (id) {
-    let path = pointer.escape(id);
-    return pointer.get(this.state, `/users/${path}/presence`);
-  }
-
-  /**
-   * Gets an up-to-date list of all IdleRPG players.
-   * @return {Array} List of players.
-   */
-  async _getPlayers () {
-    let rpg = this;
-    let players = rpg.get(`/players`);
-    let users = rpg.get(`/users`);
-    return Object.values(players);
-  }
-
-  async _getUsers () {
-    let rpg = this;
-    let users = rpg.get(`/users`);
-    return Object.values(users);
-  }
-
-  /**
-   * Gets a list of all "currently active" IdleRPG players.
-   * @return {Array} List of players.
-   */
-  async _getActivePlayers () {
-    let rpg = this;
-    let players = await rpg._getPlayers();
-    let online = players.filter(player => {
-      let user = rpg.get(`/users/${player.path}`);
-      return user.presence === 'online';
-    });
-
-    return online.filter(function (x) {
-      // TODO: configurable exclude of self
-      return x.alias !== rpg.config.alias;
-    });
-  }
-
-  async _handleJoin (join) {
-    if (this.config.debug) console.log('[IDLERPG]', 'handling join:', join);
-
-    let channel = await this._registerChannel({
-      id: join.channel.toLowerCase(),
-      name: join.channel
-    });
-
-    let parts = join.channel.split('/');
-    if (parts.length === 1) parts = ['local', 'channels', channel.id];
-    let state = new Fabric.State(channel);
-
-    let id = state.id;
-    let room = `${id}`;
-    let path = `/channels/${room}/members`;
-
-    if (
-      (this.config.channels.includes(join.channel)) ||
-      (this.config.channels.includes(join.channel.toLowerCase()))
-    ) {
-      let chunks = join.user.split('/');
-      if (chunks.length === 1) chunks = ['local', 'users', join.user];
-      let player = await this._registerPlayer({ name: join.user });
-      let list = this.get(path);
-      let set = new Set(list);
-
-      set.add(join.user);
-
-      manager.applyPatch(this.state, [{
-        op: 'replace',
-        path: path,
-        value: Array.from(set)
-      }]);
-
-      if (player) {
-        await this._welcomePlayer(player);
-      }
-    }
-  }
-
-  async _welcomePlayer (user) {
-    this.announce(`Welcome to [IdleRPG](https://github.com/FabricLabs/idlerpg-bot), ${user.name}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**   Message [@idlerpg](https://matrix.to/#/@idlerpg:verse.im) _directly_ for [\`!help\`](https://github.com/FabricLabs/idlerpg-bot#triggers) or just enjoy the ride.  Best of luck!`);
-  }
-
-  async _registerPlayer (player) {
-    await super._registerPlayer(player);
-
-    console.log('player to register:', player);
-
-    let result = null;
-
-    // ID is a global identifier, choose it wisely
-    let path = pointer.escape(`local/users/${player.name}`);
-    let state = new Fabric.State(player);
-    let vector = [state.id, state.render()];
-    let profile = Object.assign({
-      type: 'Player',
-      sharing: vector
-    }, player, {
-      id: state.id,
-      path: path,
-      name: player.name,
-      data: {}
-    });
-
-    console.log('player id:', vector[0]);
-
-    try {
-      await this.set(`/players/${vector[0]}`, profile);
-      await this.set(`/users/${player.path}/players`, [vector[0]]);
-
-      result = this.get(`/players/${vector[0]}`);
-    } catch (E) {
-      return console.error('Cannot register player:', E);
-    }
-
-    return result;
-  }
-
-  async _registerUser (user) {
-    let path = pointer.escape(`local/users/${user.id}`);
-    let result = null;
-    let state = new Fabric.State(user);
-    let transform = [state.id, state.render()];
-
-    let profile = Object.assign({
-      type: 'User',
-      sharing: transform,
-      presence: 'registering',
-      characters: []
-    }, user, {
-      id: path
-    });
-
-    try {
-      await this.set(`/users/${path}`, profile);
-      result = this.get(`/users/${path}`);
-    } catch (E) {
-      return console.error('Cannot register user:', E);
-    }
-
-    return result;
-  }
-
-  async _registerChannel (channel) {
-    if (this.config.debug) console.log('[IDLERPG]', 'registering channel:', channel);
-    if (!channel.id) return console.error('Channel must have an "id" property.');
-
-    let rpg = this;
-    let parts = channel.id.split('/');
-
-    if (parts.length === 1) {
-      parts = ['local', 'channels', channel.id];
-    }
-
-    let id = parts.join('/');
-    let data = { name: channel.name, service: 'idlerpg' };
-    let state = new Fabric.State(data);
-    let hash = state.id;
-
-    data.members = [];
-
-    let target = pointer.escape(id);
-    let path = `/channels/${hash}`;
-    let obj = Object.assign({
-      id: hash,
-      members: []
-    }, data);
-
-    rpg.set(path, obj);
-
-    return rpg.get(path);
-  }
-
-  async _registerService (service) {
-    manager.applyPatch(this.state, [{
-      op: 'add',
-      path: `/services/${service.name}`,
-      value: {
-        users: {},
-        channels: {}
-      }
-    }]);
-    await this.commit();
-  }
-
-  // TODO: implement
-  async _disjoinPlayer (id) {
-    return this;
-  }
-
-  async _handleMessage (message) {
-    if (!this.channels.includes(message.target)) return;
-    let profile = await this._getProfile(message.actor);
-    await this.penalize(profile);
-  }
-
-  // TODO: use Fabric for patch event handling
-  async _handlePatch (patch) {
-    console.log('[IDLERPG]', 'handling patch:', patch);
-    manager.applyOperation(this.state, patch);
-    await this.commit();
-  }
-
-  // TODO: use Fabric for patch event handling
-  async _handlePatches (patches) {
-    manager.applyPatch(this.state, patches);
-    await this.commit();
-  }
-
-  async stop () {
-    clearInterval(this.clock);
-    await this.store.close();
-    await super.stop();
-    return this;
-  }
 }
 
 module.exports = IdleRPG;
+module.exports.Player = Player;
+module.exports.STORE_KEY = STORE_KEY;
