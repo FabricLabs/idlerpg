@@ -101,12 +101,54 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('retains all daily history by default and prunes only when retentionDays is set', async function () {
+    const DAY = 24 * 60 * 60 * 1000;
+    for (const [retentionDays, expected] of [[undefined, 400], [30, 30]]) {
+      const time = clock();
+      const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, now: time.now, retentionDays, verbosity: 0 });
+      await rpg.start();
+      await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+      for (let i = 0; i < 400; i++) { await rpg.tick(); time.advance(DAY); }
+      assert.strictEqual(Object.keys(rpg.content.stats.days).length, expected);
+      await rpg.stop();
+    }
+  });
+
   it('honors a channel allowlist', async function () {
     const rpg = new IdleRPG({ persistent: false, autostart: false, channels: ['idlerpg'], verbosity: 0 });
     await rpg.start();
     await rpg._handleJoin({ user: 'local/users/a', channel: 'local/channels/general' });
     await rpg._handleJoin({ user: 'local/users/b', channel: 'local/channels/idlerpg' });
     assert.strictEqual(rpg.report().presentNow, 1);
+    await rpg.stop();
+  });
+
+  it('publishes announcements only to configured announcement targets', async function () {
+    const announce = 'discord/channels/announce';
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: [announce], verbosity: 0 });
+    const messages = [];
+    rpg.on('message', (m) => messages.push(m));
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'alice' });
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/voice' });
+    assert.strictEqual(rpg.report().presentNow, 1);
+    assert.ok(messages.length > 0);
+    assert.ok(messages.every((m) => m.target === announce));
+    assert.ok(messages.some((m) => m.object.startsWith('Welcome to IdleRPG, alice')));
+    await rpg.stop();
+  });
+
+  it('penalizes chat in an announcement channel', async function () {
+    const announce = 'discord/channels/announce';
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: [announce], verbosity: 0 });
+    await rpg.start();
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/voice' });
+    await rpg.tick();
+    const before = rpg.content.players['discord/users/1'].wealth;
+    await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/elsewhere', object: 'hello' });
+    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, before);
+    await rpg._handleMessage({ actor: 'discord/users/1', target: announce, object: 'hello' });
+    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, Math.floor(before / 2));
     await rpg.stop();
   });
 

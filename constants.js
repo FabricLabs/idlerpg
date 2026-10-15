@@ -13,8 +13,8 @@ const LEVEL_EXPONENT = 1.5;
 const PENALTY_COOLDOWN = 10;
 const PENALTY_FACTOR = 0.5;
 
-// Day buckets kept for rolling windows.
-const RETENTION_DAYS = 90;
+// Day buckets kept; 0 keeps every day ever recorded.
+const RETENTION_DAYS = 0;
 
 const HTTP_HOST = 'api.roleplaygateway.com';
 

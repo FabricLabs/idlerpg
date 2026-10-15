@@ -52,9 +52,12 @@ class IdleRPG extends Service {
    * @param {number} [settings.interval=600000] Tick interval in milliseconds (`tickMs` alias).
    * @param {number} [settings.luck=0.05] Encounter chance per rewarded tick (0-1).
    * @param {Array<string>} [settings.channels=[]] Channel allowlist (empty = every channel counts).
+   * @param {Array<string>} [settings.announcements=[]] Fully qualified targets
+   *   (`<service>/channels/<id>`) that receive every announcement instead of the
+   *   presence channels. Chatting there is also penalized.
    * @param {boolean} [settings.penalties=true] Slash wealth for chatting in a game channel.
    * @param {boolean} [settings.autostart=true] Run the tick clock on `start()`.
-   * @param {number} [settings.retentionDays=90] Day buckets kept.
+   * @param {number} [settings.retentionDays=0] Day buckets kept (0 = keep all history).
    * @param {Function} [settings.now] Clock (tests).
    */
   constructor (settings = {}) {
@@ -69,6 +72,7 @@ class IdleRPG extends Service {
     this.settings = Object.assign({
       alias: 'idlerpg',
       channels: [],
+      announcements: [],
       luck: ENCOUNTER_CHANCE,
       perTickCapital: PER_TICK_CAPITAL,
       perTickExperience: PER_TICK_EXPERIENCE,
@@ -211,9 +215,11 @@ class IdleRPG extends Service {
   }
 
   _pruneDays (now) {
-    const keep = new Set(windowDays(now, this.settings.retentionDays));
+    const retentionDays = Number(this.settings.retentionDays);
+    if (!(retentionDays > 0)) return;
+    const oldest = dayKey(now - (retentionDays - 1) * DAY_MS);
     for (const key of Object.keys(this.content.stats.days)) {
-      if (!keep.has(key)) delete this.content.stats.days[key];
+      if (key < oldest) delete this.content.stats.days[key];
     }
   }
 
@@ -355,8 +361,10 @@ class IdleRPG extends Service {
    */
   async _handleMessage (message) {
     if (!this.settings.penalties || !message || !message.actor || !message.target) return null;
-    if (!this.content.channels[message.target]) return null;
-    if (!this._channelAllowed(message.target)) return null;
+    if (!this._announcementTargets().includes(message.target)) {
+      if (!this.content.channels[message.target]) return null;
+      if (!this._channelAllowed(message.target)) return null;
+    }
     if (typeof message.object === 'string' && message.object.trim().startsWith('!')) return null;
     const player = this.content.players[message.actor];
     if (!player) return null;
@@ -372,13 +380,20 @@ class IdleRPG extends Service {
     this.announce(`Welcome to IdleRPG, ${player.name}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
   }
 
+  _announcementTargets () {
+    return (this.settings.announcements || []).map((target) => String(target).trim()).filter(Boolean);
+  }
+
   /**
-   * Emit an announcement for every known game channel.
+   * Emit an announcement to the configured announcement targets, or to every
+   * known game channel when none are configured.
    * @param {string} text
    */
   announce (text) {
-    for (const channel of Object.keys(this.content.channels)) {
-      this.emit('message', { actor: this.settings.alias, object: text, target: channel });
+    const fixed = this._announcementTargets();
+    const targets = fixed.length ? fixed : Object.keys(this.content.channels);
+    for (const target of targets) {
+      this.emit('message', { actor: this.settings.alias, object: text, target });
     }
   }
 
