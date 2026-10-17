@@ -9,6 +9,9 @@ const EventEmitter = require('events').EventEmitter;
 const IdleRPG = require('../types/idlerpg');
 const IdleRPGService = require('../services/idlerpg');
 const Player = require('../types/player');
+const items = require('@fabric/rpg/functions/items');
+const { placeFor } = require('@fabric/rpg/functions/places');
+const { TICK_INTERVAL } = require('@fabric/rpg/constants');
 
 function tmpStore () {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'idlerpg-test-'));
@@ -34,11 +37,89 @@ describe('Player', function () {
     assert.strictEqual(player.presenceMs, 10000);
   });
 
+  it('levels on its own steeper curve', function () {
+    assert.strictEqual(Player.experienceForLevel(2), 100);
+    assert.strictEqual(Player.experienceForLevel(3), 314);
+    assert.strictEqual(Player.experienceForLevel(100), Math.ceil(100 * Math.pow(99, 1.65)));
+    for (const level of [2, 3, 50, 100, 1000]) {
+      assert.strictEqual(Player.levelForExperience(Player.experienceForLevel(level)), level);
+      assert.strictEqual(Player.levelForExperience(Player.experienceForLevel(level) - 1), level - 1);
+    }
+  });
+
   it('penalizes by halving wealth', function () {
     const player = new Player({ id: 'a', wealth: 100 });
     assert.deepStrictEqual(player.penalize(), { notify: true });
     assert.strictEqual(player.wealth, 50);
     assert.deepStrictEqual(player.penalize(), { notify: false });
+  });
+
+  it('earns one attribute point per level, rotating strength, dexterity, constitution', function () {
+    const player = new Player({ id: 'a' });
+    assert.deepStrictEqual([player.attributes.strength, player.attributes.dexterity, player.attributes.constitution], [10, 10, 10]);
+    player.gain(Player.experienceForLevel(3));
+    assert.strictEqual(player.level, 3);
+    assert.deepStrictEqual([player.attributes.strength, player.attributes.dexterity, player.attributes.constitution], [11, 11, 10]);
+  });
+
+  it('migrates a record saved before attributes and gear', function () {
+    const old = { id: 'a', name: 'alice', experience: 1000, wealth: 5, ticks: 100, inventory: [] };
+    const player = new Player(old);
+    assert.strictEqual(player.level, 5);
+    assert.strictEqual(player.allocated, 5);
+    assert.deepStrictEqual([player.attributes.strength, player.attributes.dexterity, player.attributes.constitution], [12, 11, 11]);
+    assert.deepStrictEqual(player.equipment, {});
+    assert.deepStrictEqual(player.battles, { won: 0, lost: 0 });
+    const again = new Player(player.toObject());
+    assert.deepStrictEqual(again.attributes, player.attributes);
+  });
+
+  it('loads gear saved before item levels at the player level', function () {
+    const sword = { id: 'sword', count: 1, quality: 50, material: 'iron', durability: 135, durabilityMax: 135 };
+    const player = new Player({ id: 'a', experience: 1000, equipment: { 'main-hand': sword }, inventory: [Object.assign({}, sword), { id: 'wool', count: 2 }] });
+    assert.strictEqual(player.equipment['main-hand'].level, 5);
+    assert.strictEqual(player.inventory[0].level, 5);
+    assert.strictEqual(player.inventory[1].level, undefined);
+    const leveled = items.stack('sword', { level: 2 });
+    assert.strictEqual(new Player({ id: 'a', experience: 1000, equipment: { 'main-hand': leveled } }).equipment['main-hand'].level, 2);
+  });
+
+  it('wears only the humanoid kit and bags beast gear', function () {
+    const collar = items.stack('spiked-collar', { quality: 90 });
+    const player = new Player({ id: 'a', equipment: { collar, ring: items.stack('club') } });
+    assert.deepStrictEqual(player.equipment, {});
+    assert.strictEqual(player.actor.body, 'humanoid');
+    assert.strictEqual(player.receive(collar).equipped, null);
+    assert.deepStrictEqual(player.equipment, {});
+    assert.strictEqual(player.inventory[0].id, 'spiked-collar');
+  });
+
+  it('equips better gear, bags the rest, and sells from a full bag', function () {
+    const player = new Player({ id: 'a' });
+    const club = items.stack('club', { quality: 50 });
+    const sword = items.stack('sword', { quality: 50 });
+    assert.strictEqual(player.receive(club).equipped.id, 'club');
+    assert.strictEqual(player.weapon, 'Club');
+    assert.strictEqual(player.receive(sword).equipped.id, 'sword');
+    assert.deepStrictEqual(player.inventory.map((s) => s.id), ['club']);
+    assert.strictEqual(player.receive(items.stack('club', { quality: 10 })).equipped, null);
+    player.receive({ id: 'wool', count: 2 });
+    player.receive({ id: 'wool', count: 1 });
+    assert.strictEqual(player.inventory.find((s) => s.id === 'wool').count, 3);
+    let sold = 0;
+    for (let i = 0; i < 20; i++) sold += player.receive(items.stack('dagger', { quality: 50 })).sold;
+    assert.strictEqual(player.inventory.length, 16);
+    assert.ok(sold > 0);
+    assert.strictEqual(player.wealth, sold);
+  });
+
+  it('records battles and costs wealth on defeat', function () {
+    const player = new Player({ id: 'a', wealth: 100 });
+    player.recordBattle(true, 'slime');
+    assert.deepStrictEqual(player.recordBattle(false), { lost: 10 });
+    assert.strictEqual(player.kills, 1);
+    assert.deepStrictEqual(player.battles, { won: 1, lost: 1 });
+    assert.deepStrictEqual(player.slain, { slime: 1 });
   });
 });
 
@@ -138,6 +219,22 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('welcomes a player once and never announces a service id', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    const messages = [];
+    rpg.on('message', (m) => messages.push(m));
+    await rpg.start();
+    await Promise.all([
+      rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/voice' }),
+      rpg._handlePresence({ user: 'discord/users/1', status: 'online', channel: 'discord/channels/voice' })
+    ]);
+    const welcomes = messages.filter((m) => m.object.startsWith('Welcome to IdleRPG'));
+    assert.strictEqual(welcomes.length, 1);
+    assert.ok(welcomes[0].object.startsWith('Welcome to IdleRPG, Unknown pilot.'));
+    assert.ok(!messages.some((m) => m.object.includes('discord/users')));
+    await rpg.stop();
+  });
+
   it('penalizes chat in an announcement channel', async function () {
     const announce = 'discord/channels/announce';
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: [announce], verbosity: 0 });
@@ -179,6 +276,108 @@ describe('IdleRPG', function () {
     assert.strictEqual(rpg.content.players['local/users/b'].wealth, 15);
     assert.strictEqual(whispers[0].target, 'local/users/b');
     await rpg.stop();
+  });
+
+  it('ticks on the shared @fabric/rpg world clock', function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });
+    assert.strictEqual(rpg.settings.tickMs, TICK_INTERVAL);
+    assert.strictEqual(rpg.worldClock.interval, 600000);
+  });
+
+  it('runs seeded encounters: battles, loot, gear, and public announcements only', async function () {
+    const run = async () => {
+      const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 1, seed: 'test-world', now: clock().now, verbosity: 0 });
+      const messages = [];
+      rpg.on('message', (m) => messages.push(m.object));
+      await rpg.start();
+      await rpg._registerUser({ id: 'discord/users/1', name: 'alice' });
+      await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/idlerpg' });
+      await rpg._handleJoin({ user: 'discord/users/2', channel: 'discord/channels/idlerpg' });
+      for (let i = 0; i < 60; i++) await rpg.tick();
+      const result = { messages, report: rpg.report(), leaderboard: rpg.leaderboard(), players: JSON.parse(JSON.stringify(rpg.content.players)) };
+      await rpg.stop();
+      return result;
+    };
+
+    const first = await run();
+    const second = await run();
+    assert.deepStrictEqual(first.players, second.players, 'same seed replays the same world');
+
+    const { report, leaderboard, players, messages } = first;
+    const place = placeFor('discord/channels/idlerpg').name;
+    assert.ok(report.battles.total > 0);
+    assert.strictEqual(report.kills, report.battles.won);
+    assert.ok(report.slain.length > 0 && report.slain.length <= 5);
+    assert.ok(report.slain.every((row) => row.name && row.count > 0));
+    assert.ok(!JSON.stringify(report).includes('discord/users'));
+
+    const alice = players['discord/users/1'];
+    assert.strictEqual(alice.kills, alice.battles.won);
+    assert.ok(alice.kills > 0);
+    assert.ok(Object.keys(alice.equipment).length > 0, 'loot was equipped');
+
+    const row = leaderboard.find((r) => r.name === 'alice');
+    assert.strictEqual(row.kills, alice.kills);
+    assert.ok(row.weapon === null || typeof row.weapon === 'string');
+    assert.ok(leaderboard.some((r) => r.name === 'Unknown pilot'));
+
+    assert.ok(messages.some((m) => m.includes(` near ${place}`)));
+    assert.ok(messages.some((m) => /^alice (slew|hunted) /.test(m)));
+    assert.ok(!messages.some((m) => m.includes('discord/users')));
+  });
+
+  it('levels monsters around the player', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 1, levelRange: 1, levelOffset: 0.4, seed: 'levels', verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'alice', online: true });
+    const levels = new Set();
+    for (let i = 0; i < 200; i++) {
+      const player = new Player({ id: 'local/users/a', name: 'alice', experience: 1000 });
+      assert.strictEqual(player.level, 5);
+      rpg.content.stats.totalTicks = i;
+      const outcome = rpg._rollForEncounter(player);
+      if (!outcome || outcome.type !== 'monster') continue;
+      const center = player.level + 2 + (outcome.creature.unique ? 3 : 0);
+      assert.ok(Math.abs(outcome.creature.level - center) <= 1, `level ${outcome.creature.level} vs ${center}`);
+      if (!outcome.creature.unique) levels.add(outcome.creature.level);
+    }
+    await rpg.stop();
+    assert.deepStrictEqual([...levels].sort((a, b) => a - b), [6, 7, 8]);
+  });
+
+  it('announces rare and legendary gear and equips it', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: ['local/channels/idlerpg'], verbosity: 0 });
+    const messages = [];
+    rpg.on('message', (m) => messages.push(m.object));
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'alice', online: true });
+    const player = new Player(rpg.content.players['local/users/a']);
+
+    rpg._applyEncounter(player, { type: 'item', item: items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' }), place: null });
+    rpg._applyEncounter(player, { type: 'item', item: items.stack('leather-gauntlets', { suffix: 'fox' }), place: null });
+    await rpg.stop();
+
+    assert.ok(messages.includes('alice found a **Keen Sword of the Bear** (legendary).  Equipped: **Keen Sword of the Bear** (legendary).'));
+    assert.ok(messages.some((m) => m.startsWith('alice found **Leather Gauntlets of the Fox**.')));
+    assert.strictEqual(player.weapon, 'Keen Sword of the Bear');
+    assert.strictEqual(player.equipment.gauntlets.suffix, 'fox');
+  });
+
+  it('migrates saved players when restoring', async function () {
+    const dir = tmpStore();
+    const first = new IdleRPG({ path: dir, autostart: false, luck: 0, verbosity: 0 });
+    await first.start();
+    first.content.players['local/users/a'] = { id: 'local/users/a', name: 'a', experience: 1000, wealth: 3, ticks: 50, inventory: [] };
+    await first.stop();
+
+    const second = new IdleRPG({ path: dir, autostart: false, verbosity: 0 });
+    await second.start();
+    const record = second.content.players['local/users/a'];
+    assert.strictEqual(record.attributes.strength, 12);
+    assert.deepStrictEqual(record.battles, { won: 0, lost: 0 });
+    assert.ok(second.content.stats.seed, 'a world seed is created and saved');
+    await second.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('persists to a Store and restores with everyone offline', async function () {

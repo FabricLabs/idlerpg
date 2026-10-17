@@ -7,8 +7,19 @@
 // `_handleJoin`, `_handlePart`, `_handlePresence`, `_handleMessage`) that any
 // host — Doorman, a test, a script — drives. Nothing here speaks to a chat
 // network directly; see `services/idlerpg.js` for the Doorman adapter.
+//
+// The world comes from `@fabric/rpg`: the clock is its
+// `WorldClock`, encounters are its seeded `Encounter` (creatures, battles,
+// loot), and each game channel is a named place with a biome.
 
+const crypto = require('crypto');
 const Service = require('@fabric/core/types/service');
+const WorldClock = require('@fabric/rpg/types/clock');
+const Encounter = require('@fabric/rpg/types/encounter');
+const creatures = require('@fabric/rpg/functions/creatures');
+const items = require('@fabric/rpg/functions/items');
+const { placeFor } = require('@fabric/rpg/functions/places');
+const { seeded } = require('@fabric/rpg/functions/random');
 const Player = require('./player');
 
 const {
@@ -16,12 +27,18 @@ const {
   PER_TICK_EXPERIENCE,
   TICK_INTERVAL,
   ENCOUNTER_CHANCE,
+  ENCOUNTER_WEIGHTS,
+  EXPERIENCE_RATE,
+  LEVEL_OFFSET,
+  LEVEL_OFFSET_MAX,
   RETENTION_DAYS
 } = require('../constants');
 
 const STORE_KEY = '/idlerpg';
+const UNKNOWN_NAME = 'Unknown pilot';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const TOP_CREATURES = 5;
 
 function dayKey (ms) {
   return new Date(ms).toISOString().slice(0, 10);
@@ -37,6 +54,38 @@ function round1 (n) {
   return Math.round(n * 10) / 10;
 }
 
+function article (name) {
+  if (/s$/i.test(name)) return name;
+  return /^[aeiou]/i.test(name) ? `an ${name}` : `a ${name}`;
+}
+
+// Rare gear (one affix) is bold; legendary gear (prefix and suffix) is also labelled.
+function itemName (stack) {
+  const name = items.displayName(stack);
+  switch (items.rarity(stack)) {
+    case 'legendary': return `**${name}** (legendary)`;
+    case 'rare': return `**${name}**`;
+    default: return name;
+  }
+}
+
+function itemPhrase (stack) {
+  const a = items.article(stack);
+  return a ? `${a} ${itemName(stack)}` : itemName(stack);
+}
+
+function listItems (stacks) {
+  return stacks.map(itemName).join(', ');
+}
+
+// Announcement tail for gear equipped and spares sold by `Player#resolve`.
+function receipt (result) {
+  let text = '';
+  if (result.equipped.length) text += `  Equipped: ${result.equipped.map(itemName).join(', ')}.`;
+  if (result.sold) text += `  Sold spares for **${result.sold}** gold.`;
+  return text;
+}
+
 /**
  * Generic IdleRPG engine.
  * @fires IdleRPG#tick Once per clock cycle with `{ clock, presentNow, now }`.
@@ -49,8 +98,18 @@ class IdleRPG extends Service {
    * @param {string} [settings.name='idlerpg']
    * @param {string} [settings.path='stores/idlerpg'] Store directory.
    * @param {boolean} [settings.persistent=true] Persist state to the Store.
-   * @param {number} [settings.interval=600000] Tick interval in milliseconds (`tickMs` alias).
+   * @param {number} [settings.interval=600000] Tick interval in milliseconds (`tickMs` alias);
+   *   defaults to the `@fabric/rpg` world tick.
    * @param {number} [settings.luck=0.05] Encounter chance per rewarded tick (0-1).
+   * @param {Object} [settings.encounterWeights] Relative weights of `monster`,
+   *   `item`, `cache`, and `blessing` encounters (default 6, 2, 1, 1).
+   * @param {number} [settings.levelRange=2] Monsters are at least the player's level ± this many...
+   * @param {number} [settings.levelSpread=0.1] ...or ± this fraction of it, when wider.
+   * @param {number} [settings.levelOffset] Monsters are centered this fraction of the player's level above it...
+   * @param {number} [settings.levelOffsetMax] ...but at most this many levels.
+   * @param {number} [settings.experienceRate] Multiplier on kill and blessing experience.
+   * @param {number} [settings.perTickExperience] Experience per tick present.
+   * @param {string} [settings.seed] World seed for encounters; generated and saved on first start.
    * @param {Array<string>} [settings.channels=[]] Channel allowlist (empty = every channel counts).
    * @param {Array<string>} [settings.announcements=[]] Fully qualified targets
    *   (`<service>/channels/<id>`) that receive every announcement instead of the
@@ -74,6 +133,12 @@ class IdleRPG extends Service {
       channels: [],
       announcements: [],
       luck: ENCOUNTER_CHANCE,
+      encounterWeights: ENCOUNTER_WEIGHTS,
+      levelRange: Encounter.LEVEL_RANGE,
+      levelSpread: Encounter.LEVEL_SPREAD,
+      levelOffset: LEVEL_OFFSET,
+      levelOffsetMax: LEVEL_OFFSET_MAX,
+      experienceRate: EXPERIENCE_RATE,
       perTickCapital: PER_TICK_CAPITAL,
       perTickExperience: PER_TICK_EXPERIENCE,
       penalties: true,
@@ -88,10 +153,13 @@ class IdleRPG extends Service {
       users: {},
       players: {},
       channels: {},
-      stats: { totalPresentMs: 0, totalTicks: 0, days: {}, lastTick: null, startedAt: null }
+      stats: { totalPresentMs: 0, totalTicks: 0, days: {}, lastTick: null, startedAt: null, seed: null, battles: { won: 0, lost: 0 }, slain: {} }
     };
 
-    this.clock = null;
+    this.worldClock = new WorldClock({ interval: this.settings.tickMs, now: this.settings.now });
+    this.worldClock.on('tick', () => {
+      this.tick().catch((error) => this.emit('error', `[IDLERPG] tick: ${error && error.message ? error.message : error}`));
+    });
     this._dirty = false;
 
     // Command handlers exposed to hosts (Doorman maps these to `!triggers`).
@@ -120,20 +188,18 @@ class IdleRPG extends Service {
   async start () {
     await super.start();
     await this._restore();
-    if (!this.content.stats.startedAt) this.content.stats.startedAt = new Date(this.now).toISOString();
-    if (this.settings.autostart && this.settings.tickMs > 0) {
-      this.clock = setInterval(() => {
-        this.tick().catch((error) => this.emit('error', `[IDLERPG] tick: ${error && error.message ? error.message : error}`));
-      }, this.settings.tickMs);
-      if (typeof this.clock.unref === 'function') this.clock.unref();
-    }
+    const stats = this.content.stats;
+    if (!stats.startedAt) stats.startedAt = new Date(this.now).toISOString();
+    if (this.settings.seed != null) stats.seed = String(this.settings.seed);
+    if (!stats.seed) stats.seed = crypto.randomBytes(16).toString('hex');
+    this.worldClock.clock = stats.totalTicks;
+    if (this.settings.autostart && this.settings.tickMs > 0) this.worldClock.start();
     this.emit('ready');
     return this;
   }
 
   async stop () {
-    if (this.clock) clearInterval(this.clock);
-    this.clock = null;
+    this.worldClock.stop();
     await this._persist();
     await super.stop();
     return this;
@@ -153,6 +219,12 @@ class IdleRPG extends Service {
     content.channels = prior.channels || {};
     content.stats = Object.assign(content.stats, prior.stats || {});
     if (!content.stats.days) content.stats.days = {};
+    if (!content.stats.battles) content.stats.battles = { won: 0, lost: 0 };
+    if (!content.stats.slain) content.stats.slain = {};
+    // Older saves predate attributes and gear; Player fills them in.
+    for (const [id, record] of Object.entries(content.players)) {
+      content.players[id] = new Player(record).toObject();
+    }
     // Nobody is known to be present after a restart until the host says so.
     for (const user of Object.values(content.users)) {
       user.presence = 'offline';
@@ -186,20 +258,21 @@ class IdleRPG extends Service {
 
     for (const user of present) {
       const player = this._player(user.id, user.name);
-      const before = new Player(player);
-      const outcome = before.reward(this.settings.tickMs, this.settings);
-      Object.assign(player, before.toObject());
-      player.lastSeen = new Date(now).toISOString();
+      const record = new Player(player);
+      const outcome = record.reward(this.settings.tickMs, this.settings);
+      record.lastSeen = new Date(now).toISOString();
       bucket.presentMs += this.settings.tickMs;
       bucket.players[user.id] = 1;
       stats.totalPresentMs += this.settings.tickMs;
-      if (outcome.leveled) this.announce(`${player.name} has reached level ${outcome.level}!`);
-      this._rollForEncounter(player);
+      if (outcome.leveled) this.announce(`${this._publicName(record)} has reached level ${outcome.level}!`);
+      this._rollForEncounter(record, user);
+      Object.assign(player, record.toObject());
     }
 
     bucket.ticks += 1;
     bucket.peak = Math.max(bucket.peak, present.length);
     stats.totalTicks += 1;
+    this.worldClock.clock = stats.totalTicks;
     stats.lastTick = new Date(now).toISOString();
     this._pruneDays(now);
 
@@ -223,12 +296,78 @@ class IdleRPG extends Service {
     }
   }
 
-  _rollForEncounter (player) {
-    if (!(Math.random() < this.settings.luck)) return null;
-    const loot = Math.ceil(Math.random() * this.settings.perTickCapital * 5);
-    player.wealth += loot;
-    this.announce(`${player.name} stumbled upon a hidden cache in their travels and looted **${loot}** gold.`);
-    return { type: 'loot', loot };
+  /**
+   * Where a present user is: the place named after the first game channel
+   * they are in (or the game itself for channel-less adapters).
+   * @param {Object} [user]
+   * @returns {Object} `@fabric/rpg` place `{ key, name, kind, biome }`.
+   */
+  _placeFor (user) {
+    const channels = user && user.channels ? Object.keys(user.channels).sort() : [];
+    return placeFor(channels[0] || this.settings.alias);
+  }
+
+  /**
+   * Maybe meet something this tick. The roll is seeded by the world seed,
+   * the tick, and the player, so a saved world replays the same encounters.
+   * @param {Player} player Mutated in place.
+   * @param {Object} [user]
+   * @returns {Object|null} The encounter outcome.
+   */
+  _rollForEncounter (player, user) {
+    const stats = this.content.stats;
+    const random = seeded(`${stats.seed}:${stats.totalTicks}:${player.id}`);
+    if (!random.chance(this.settings.luck)) return null;
+    const place = this._placeFor(user);
+    const outcome = new Encounter({
+      actor: player.actor,
+      place,
+      weights: this.settings.encounterWeights,
+      cacheMax: this.settings.perTickCapital * 5,
+      levelRange: this.settings.levelRange,
+      levelSpread: this.settings.levelSpread,
+      levelOffset: this.settings.levelOffset,
+      levelOffsetMax: this.settings.levelOffsetMax,
+      experienceRate: this.settings.experienceRate,
+      random
+    }).outcome;
+    this._applyEncounter(player, outcome);
+    return outcome;
+  }
+
+  _applyEncounter (player, outcome) {
+    const name = this._publicName(player);
+    const near = outcome.place ? ` near ${outcome.place.name}` : '';
+    const stats = this.content.stats;
+    const result = player.resolve(outcome);
+    const received = receipt(result);
+
+    switch (outcome.type) {
+      case 'monster': {
+        const foe = `level ${outcome.creature.level} ${outcome.creature.name}`;
+        if (!outcome.victory) {
+          stats.battles.lost += 1;
+          this.announce(`${name} was defeated by ${article(foe)}${near}${result.lost ? ` and dropped **${result.lost}** gold` : ''}.`);
+          break;
+        }
+        stats.battles.won += 1;
+        stats.slain[outcome.creature.id] = (stats.slain[outcome.creature.id] || 0) + 1;
+        const verb = outcome.creature.hostile ? 'slew' : 'hunted';
+        const loot = outcome.loot.length ? `, looting ${listItems(outcome.loot)}` : '';
+        this.announce(`${name} ${verb} ${article(foe)}${near} for **${outcome.experience}** experience${loot}.${received}`);
+        break;
+      }
+      case 'item':
+        this.announce(`${name} found ${itemPhrase(outcome.item)}${near}.${received}`);
+        break;
+      case 'blessing':
+        this.announce(`${outcome.deity} smiled upon ${name}${near}: **${outcome.experience}** experience.`);
+        break;
+      default:
+        this.announce(`${name} stumbled upon a hidden cache in their travels${near} and looted **${outcome.wealth}** gold.`);
+    }
+    if (result.leveled) this.announce(`${name} has reached level ${result.level}!`);
+    this._dirty = true;
   }
 
   // ### Inputs
@@ -286,11 +425,24 @@ class IdleRPG extends Service {
   }
 
   async _registerChannel (channel) {
+    return this._channel(channel);
+  }
+
+  _channel (channel) {
     if (!channel || !channel.id) return null;
     const channels = this.content.channels;
     if (!channels[channel.id]) channels[channel.id] = { id: channel.id, name: channel.name || channel.id, members: {} };
     this._dirty = true;
     return channels[channel.id];
+  }
+
+  /**
+   * Name safe to publish: never a service id.
+   * @param {Object} player
+   * @returns {string}
+   */
+  _publicName (player) {
+    return player.name && player.name !== player.id ? player.name : UNKNOWN_NAME;
   }
 
   /**
@@ -323,7 +475,9 @@ class IdleRPG extends Service {
     if (presence.status === 'online') {
       if (channel) {
         if (!this._channelAllowed(channel)) return user;
-        await this._registerChannel({ id: channel });
+        // Synchronous: a concurrent join + presence for the same user must not
+        // both see `wasOnline === false` (double welcome).
+        this._channel({ id: channel });
         this.content.channels[channel].members[user.id] = 1;
         user.channels[channel] = 1;
       } else if (!this._channelAllowed(null)) {
@@ -372,12 +526,12 @@ class IdleRPG extends Service {
     const { notify } = record.penalize();
     Object.assign(player, record.toObject());
     this._dirty = true;
-    if (notify) this.announce(`${player.name} has disrupted the peace!  Penalties have been applied, but life goes on.`);
+    if (notify) this.announce(`${this._publicName(player)} has disrupted the peace!  Penalties have been applied, but life goes on.`);
     return player;
   }
 
   async _welcomePlayer (player) {
-    this.announce(`Welcome to IdleRPG, ${player.name}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
+    this.announce(`Welcome to IdleRPG, ${this._publicName(player)}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
   }
 
   _announcementTargets () {
@@ -426,6 +580,14 @@ class IdleRPG extends Service {
       const level = new Player(player).level;
       levels[level] = (levels[level] || 0) + 1;
     }
+    const battles = stats.battles || { won: 0, lost: 0 };
+    const slain = Object.entries(stats.slain || {})
+      .map(([id, count]) => {
+        const creature = creatures.get(id);
+        return { id, name: creature ? creature.name : id, count };
+      })
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, TOP_CREATURES);
     return {
       generatedAt: new Date(now).toISOString(),
       presentNow: this._presentUsers().length,
@@ -437,6 +599,9 @@ class IdleRPG extends Service {
       startedAt: stats.startedAt,
       last7Days: window(7),
       last30Days: window(30),
+      battles: { won: battles.won, lost: battles.lost, total: battles.won + battles.lost },
+      kills: battles.won,
+      slain,
       levels,
       history: windowDays(now, 30).reverse().map((day) => {
         const bucket = stats.days[day] || { presentMs: 0, peak: 0, players: {} };
@@ -458,10 +623,12 @@ class IdleRPG extends Service {
         const player = new Player(record);
         const user = users[record.id];
         return {
-          name: player.name === player.id ? 'Unknown pilot' : player.name,
+          name: this._publicName(player),
           level: player.level,
           experience: player.experience,
           wealth: player.wealth,
+          kills: player.kills,
+          weapon: player.weapon,
           hours: round1(player.presenceMs / HOUR_MS),
           ticks: player.ticks,
           firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
@@ -494,7 +661,9 @@ class IdleRPG extends Service {
   async _handleProfileRequest (message) {
     const player = this._profileFor(message && message.actor);
     if (!player) return `You have not played yet.  Stay present in a game channel to begin.`;
-    return `You are level **${player.level}** (having earned **${player.experience}** experience) with **${player.wealth}** <small>IDLE</small> in wealth, after **${round1(player.presenceMs / HOUR_MS)}** hours present.`;
+    const a = player.attributes;
+    const weapon = player.weapon ? `wielding ${article(player.weapon)}` : 'bare-handed';
+    return `You are level **${player.level}** (having earned **${player.experience}** experience) with **${player.wealth}** <small>IDLE</small> in wealth, after **${round1(player.presenceMs / HOUR_MS)}** hours present.  STR ${a.strength} · DEX ${a.dexterity} · CON ${a.constitution}, ${weapon}, **${player.kills}** kills (${player.battles.won}–${player.battles.lost} in battle).`;
   }
 
   async _handleBalanceRequest (message) {
@@ -546,4 +715,5 @@ class IdleRPG extends Service {
 
 module.exports = IdleRPG;
 module.exports.Player = Player;
+module.exports.WorldClock = WorldClock;
 module.exports.STORE_KEY = STORE_KEY;

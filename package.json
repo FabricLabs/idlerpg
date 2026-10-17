@@ -18,9 +18,11 @@
     "coverage": "c8 npm test",
     "docs": "npm run make:docs && ecstatic docs/",
     "link:fabric": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_CORE||path.resolve(__dirname,'../fabric-clean');const dest=path.join('node_modules','@fabric','core');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/core ->',target)\"",
+    "link:rpg": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_RPG||path.resolve(__dirname,'../rpg');const dest=path.join('node_modules','@fabric','rpg');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/rpg ->',target)\"",
     "make:docs": "jsdoc types README.md -c jsdoc.json -d docs",
-    "report:install": "rm -rf node_modules && mkdir -p reports && echo \"\n\" > package-lock.json && echo \"$ npm i\" > reports/install.log && npm i >> reports/install.log 2>&1",
+    "report:install": "rm -rf node_modules && mkdir -p reports && rm -f package-lock.json && echo \"$ npm i --allow-git=all\" > reports/install.log && npm i --allow-git=all >> reports/install.log 2>&1",
     "review:coverage": "npm run coverage && ecstatic coverage/lcov-report",
+    "simulate": "node scripts/simulate.js",
     "start": "node scripts/idlerpg.js",
     "test": "mocha tests --exit"
   },
@@ -42,7 +44,8 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/rsi"
+    "@fabric/core": "FabricLabs/fabric#feature/channels",
+    "@fabric/rpg": "FabricLabs/rpg#feature/channels"
   },
   "devDependencies": {
     "c8": "10.1.3",
