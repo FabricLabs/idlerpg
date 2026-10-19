@@ -82,6 +82,21 @@ game.fabric.emit('join', {
 });
 ```
 
+### Who is present
+`sources` decides what makes a player present (and earn each tick):
+
+- `channel` — in an allowed channel, from `join` / `part` / `presence` events
+  that name one: voice channels on Discord, rooms on IRC or Matrix.
+- `status` — online with no channel: a `presence` event without one, or a
+  `user` marked `online`.
+- `text` — posting a message in an allowed channel, which keeps its author
+  present for `textWindowMs` (30 minutes) afterwards. For text-only
+  communities; such messages are never penalized.
+
+The default is `['channel', 'status']`. The Doorman Discord adapter marks
+anyone who posts as online, so a Discord game that should only pay voice
+presence sets `sources: ['channel']`.
+
 For detailed documentation, see [the `docs` folder][docs].  Happy hacking!
 
 ## The World

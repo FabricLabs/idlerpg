@@ -31,7 +31,9 @@ const {
   EXPERIENCE_RATE,
   LEVEL_OFFSET,
   LEVEL_OFFSET_MAX,
-  RETENTION_DAYS
+  PRESENCE_SOURCES,
+  RETENTION_DAYS,
+  TEXT_PRESENCE_MS
 } = require('../constants');
 
 const STORE_KEY = '/idlerpg';
@@ -110,6 +112,13 @@ class IdleRPG extends Service {
    * @param {number} [settings.experienceRate] Multiplier on kill and blessing experience.
    * @param {number} [settings.perTickExperience] Experience per tick present.
    * @param {string} [settings.seed] World seed for encounters; generated and saved on first start.
+   * @param {Array<string>} [settings.sources=['channel','status']] What makes a
+   *   player present: `channel` (in an allowed channel, from `join` / `part` /
+   *   `presence` naming one — voice channels on Discord, rooms on IRC or
+   *   Matrix), `status` (online with no channel, from `presence` or a `user`
+   *   marked online), and `text` (a message in an allowed channel, for
+   *   `textWindowMs` afterwards; such messages are not penalized).
+   * @param {number} [settings.textWindowMs=1800000] How long a message keeps its author present.
    * @param {Array<string>} [settings.channels=[]] Channel allowlist (empty = every channel counts).
    * @param {Array<string>} [settings.announcements=[]] Fully qualified targets
    *   (`<service>/channels/<id>`) that receive every announcement instead of the
@@ -130,6 +139,8 @@ class IdleRPG extends Service {
 
     this.settings = Object.assign({
       alias: 'idlerpg',
+      sources: PRESENCE_SOURCES,
+      textWindowMs: TEXT_PRESENCE_MS,
       channels: [],
       announcements: [],
       luck: ENCOUNTER_CHANCE,
@@ -228,7 +239,9 @@ class IdleRPG extends Service {
     // Nobody is known to be present after a restart until the host says so.
     for (const user of Object.values(content.users)) {
       user.presence = 'offline';
+      user.status = 'offline';
       user.channels = {};
+      user.spokeAt = null;
     }
   }
 
@@ -254,6 +267,12 @@ class IdleRPG extends Service {
     const day = dayKey(now);
     const stats = this.content.stats;
     const bucket = this._bucket(day);
+    for (const user of Object.values(this.content.users)) {
+      if (user.presence === 'online' && !this._isPresent(user)) {
+        user.presence = 'offline';
+        user.since = null;
+      }
+    }
     const present = this._presentUsers();
 
     for (const user of present) {
@@ -298,13 +317,14 @@ class IdleRPG extends Service {
 
   /**
    * Where a present user is: the place named after the first game channel
-   * they are in (or the game itself for channel-less adapters).
+   * they are in, else the channel they last spoke in (or the game itself for
+   * channel-less adapters).
    * @param {Object} [user]
    * @returns {Object} `@fabric/rpg` place `{ key, name, kind, biome }`.
    */
   _placeFor (user) {
     const channels = user && user.channels ? Object.keys(user.channels).sort() : [];
-    return placeFor(channels[0] || this.settings.alias);
+    return placeFor(channels[0] || (user && user.spokeIn) || this.settings.alias);
   }
 
   /**
@@ -409,8 +429,48 @@ class IdleRPG extends Service {
     return players[id];
   }
 
+  _sources () {
+    return new Set([].concat(this.settings.sources || []).map((source) => String(source).toLowerCase()));
+  }
+
+  /**
+   * Whether a user counts as present under the configured `sources`.
+   * @param {Object} user
+   * @returns {boolean}
+   */
+  _isPresent (user) {
+    if (!user || user.id === this.settings.alias) return false;
+    const sources = this._sources();
+    if (sources.has('channel') && Object.keys(user.channels || {}).length) return true;
+    if (sources.has('status') && user.status === 'online') return true;
+    return sources.has('text') && user.spokeAt != null && this.now - user.spokeAt < this.settings.textWindowMs;
+  }
+
   _presentUsers () {
-    return Object.values(this.content.users).filter((user) => user.presence === 'online' && user.id !== this.settings.alias);
+    return Object.values(this.content.users).filter((user) => this._isPresent(user));
+  }
+
+  /**
+   * Record whether a user is present now; welcome first-time players.
+   * Callers must not await before this: `wasPresent` is read synchronously so a
+   * concurrent join + presence for the same user cannot both welcome them.
+   * @param {Object} user
+   * @param {boolean} wasPresent
+   */
+  async _settle (user, wasPresent) {
+    const present = this._isPresent(user);
+    user.presence = present ? 'online' : 'offline';
+    this._dirty = true;
+    if (!present) {
+      user.since = null;
+      return user;
+    }
+    if (!wasPresent) {
+      user.since = this.now;
+      const player = this._player(user.id, user.name);
+      if (!player.ticks) await this._welcomePlayer(player);
+    }
+    return user;
   }
 
   /**
@@ -462,64 +522,63 @@ class IdleRPG extends Service {
   }
 
   /**
-   * Presence change. A user is present while they are online in at least one
-   * allowed channel (or, for channel-less adapters, while simply online).
+   * Presence change. With the `channel` source a user is present while in at
+   * least one allowed channel; with `status`, while online with no channel.
+   * Going offline with no channel leaves every channel.
    * @param {Object} presence `{ user, status: 'online'|'offline', channel? }`
    */
   async _handlePresence (presence) {
     if (!presence || !presence.user) return null;
     const user = this._user(presence.user);
     const channel = presence.channel || null;
-    const wasOnline = user.presence === 'online';
+    const sources = this._sources();
+    const wasPresent = this._isPresent(user);
 
     if (presence.status === 'online') {
       if (channel) {
-        if (!this._channelAllowed(channel)) return user;
-        // Synchronous: a concurrent join + presence for the same user must not
-        // both see `wasOnline === false` (double welcome).
+        if (!sources.has('channel') || !this._channelAllowed(channel)) return user;
         this._channel({ id: channel });
         this.content.channels[channel].members[user.id] = 1;
         user.channels[channel] = 1;
-      } else if (!this._channelAllowed(null)) {
-        return user;
-      }
-      user.presence = 'online';
-      if (!wasOnline) {
-        user.since = this.now;
-        const player = this._player(user.id, user.name);
-        if (!player.ticks) await this._welcomePlayer(player);
-      }
-    } else {
-      if (channel) {
-        delete user.channels[channel];
-        if (this.content.channels[channel]) delete this.content.channels[channel].members[user.id];
       } else {
-        for (const id of Object.keys(user.channels)) {
-          if (this.content.channels[id]) delete this.content.channels[id].members[user.id];
-        }
-        user.channels = {};
+        if (!sources.has('status') || !this._channelAllowed(null)) return user;
+        user.status = 'online';
       }
-      if (!Object.keys(user.channels).length) {
-        user.presence = 'offline';
-        user.since = null;
+    } else if (channel) {
+      delete user.channels[channel];
+      if (this.content.channels[channel]) delete this.content.channels[channel].members[user.id];
+    } else {
+      for (const id of Object.keys(user.channels)) {
+        if (this.content.channels[id]) delete this.content.channels[id].members[user.id];
       }
+      user.channels = {};
+      user.status = 'offline';
     }
 
-    this._dirty = true;
-    return user;
+    return this._settle(user, wasPresent);
   }
 
   /**
-   * Chat inside a game channel breaks the silence rule.
+   * A message. With the `text` source, a message in an allowed channel keeps
+   * its author present for `textWindowMs`. Otherwise chat inside a game
+   * channel breaks the silence rule.
    * @param {Object} message `{ actor, target, object }`
    */
   async _handleMessage (message) {
-    if (!this.settings.penalties || !message || !message.actor || !message.target) return null;
+    if (!message || !message.actor || !message.target) return null;
+    if (typeof message.object === 'string' && message.object.trim().startsWith('!')) return null;
+    if (this._sources().has('text') && this._channelAllowed(message.target)) {
+      const user = this._user(message.actor);
+      const wasPresent = this._isPresent(user);
+      user.spokeAt = this.now;
+      user.spokeIn = message.target;
+      return this._settle(user, wasPresent);
+    }
+    if (!this.settings.penalties) return null;
     if (!this._announcementTargets().includes(message.target)) {
       if (!this.content.channels[message.target]) return null;
       if (!this._channelAllowed(message.target)) return null;
     }
-    if (typeof message.object === 'string' && message.object.trim().startsWith('!')) return null;
     const player = this.content.players[message.actor];
     if (!player) return null;
     const record = new Player(player);
@@ -633,7 +692,7 @@ class IdleRPG extends Service {
           ticks: player.ticks,
           firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
           lastSeen: player.lastSeen ? player.lastSeen.slice(0, 10) : null,
-          online: !!(user && user.presence === 'online')
+          online: this._isPresent(user)
         };
       })
       .sort((a, b) => b.experience - a.experience || b.hours - a.hours || a.name.localeCompare(b.name));

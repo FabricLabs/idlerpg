@@ -7,6 +7,12 @@ const PER_TICK_CAPITAL = 10;
 const PER_TICK_EXPERIENCE = 10;
 const ENCOUNTER_CHANCE = 0.05;
 
+// What makes a player present: being in a game channel (`channel`), an online
+// status with no channel (`status`), and posting a message (`text`, which
+// counts for TEXT_PRESENCE_MS afterwards).
+const PRESENCE_SOURCES = ['channel', 'status'];
+const TEXT_PRESENCE_MS = 30 * 60 * 1000;
+
 // What an encounter is, by relative weight.
 const ENCOUNTER_WEIGHTS = { monster: 6, item: 2, cache: 1, blessing: 1 };
 
@@ -44,6 +50,8 @@ module.exports = {
   ENCOUNTER_CHANCE,
   ENCOUNTER_WEIGHTS,
   EXPERIENCE_RATE,
+  PRESENCE_SOURCES,
+  TEXT_PRESENCE_MS,
   INVENTORY_SIZE,
   LEVEL_BASE_EXPERIENCE,
   LEVEL_EXPONENT,

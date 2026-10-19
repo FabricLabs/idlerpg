@@ -204,6 +204,41 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('counts only the configured presence sources', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, sources: ['channel'], verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'talker', online: true });
+    await rpg._handlePresence({ user: 'discord/users/2', status: 'online' });
+    await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/general', object: 'hello' });
+    await rpg.tick();
+    assert.strictEqual(rpg.report().presentNow, 0);
+    assert.strictEqual(rpg.content.players['discord/users/1'], undefined);
+    await rpg._handleJoin({ user: 'discord/users/3', channel: 'discord/channels/voice' });
+    await rpg.tick();
+    assert.strictEqual(rpg.report().presentNow, 1);
+    assert.strictEqual(rpg.content.players['discord/users/3'].ticks, 1);
+    await rpg.stop();
+  });
+
+  it('keeps a text author present for textWindowMs after each message', async function () {
+    const time = clock();
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, tickMs: 600000, textWindowMs: 900000, sources: ['text'], now: time.now, verbosity: 0 });
+    await rpg.start();
+    await rpg._handleJoin({ user: 'local/users/a', channel: 'local/channels/voice' });
+    await rpg._handleMessage({ actor: 'local/users/b', target: 'local/channels/general', object: '!profile' });
+    await rpg._handleMessage({ actor: 'local/users/c', target: 'local/channels/general', object: 'hello' });
+    assert.strictEqual(rpg.report().presentNow, 1);
+    assert.strictEqual(rpg._placeFor(rpg.content.users['local/users/c']).key, placeFor('local/channels/general').key);
+    time.advance(600000); await rpg.tick();
+    time.advance(600000); await rpg.tick();
+    const player = rpg.content.players['local/users/c'];
+    assert.strictEqual(player.ticks, 1);
+    assert.strictEqual(player.wealth, rpg.settings.perTickCapital);
+    assert.strictEqual(rpg.report().presentNow, 0);
+    assert.strictEqual(rpg.leaderboard(5)[0].online, false);
+    await rpg.stop();
+  });
+
   it('publishes announcements only to configured announcement targets', async function () {
     const announce = 'discord/channels/announce';
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: [announce], verbosity: 0 });
