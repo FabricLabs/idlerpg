@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const Service = require('@fabric/core/types/service');
 const WorldClock = require('@fabric/rpg/types/clock');
 const Encounter = require('@fabric/rpg/types/encounter');
+const bodies = require('@fabric/rpg/functions/bodies');
 const creatures = require('@fabric/rpg/functions/creatures');
 const items = require('@fabric/rpg/functions/items');
 const { placeFor } = require('@fabric/rpg/functions/places');
@@ -54,6 +55,21 @@ function windowDays (now, days) {
 
 function round1 (n) {
   return Math.round(n * 10) / 10;
+}
+
+/**
+ * URL-safe form of a display name: lowercase letters and digits from any
+ * script, runs of anything else collapsed to `-`.
+ * @param {string} name
+ * @returns {string} Empty when nothing usable remains.
+ */
+function slugify (name) {
+  return String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function article (name) {
@@ -122,8 +138,9 @@ class IdleRPG extends Service {
    * @param {Array<string>} [settings.channels=[]] Channel allowlist (empty = every channel counts).
    * @param {Array<string>} [settings.announcements=[]] Fully qualified targets
    *   (`<service>/channels/<id>`) that receive every announcement instead of the
-   *   presence channels. Chatting there is also penalized.
-   * @param {boolean} [settings.penalties=true] Slash wealth for chatting in a game channel.
+   *   presence channels. When set, chatting there — and nowhere else — is penalized.
+   * @param {boolean} [settings.penalties=true] Slash wealth for chatting in the
+   *   announcement channels, or in a game channel when there are none.
    * @param {boolean} [settings.autostart=true] Run the tick clock on `start()`.
    * @param {number} [settings.retentionDays=0] Day buckets kept (0 = keep all history).
    * @param {Function} [settings.now] Clock (tests).
@@ -560,8 +577,9 @@ class IdleRPG extends Service {
 
   /**
    * A message. With the `text` source, a message in an allowed channel keeps
-   * its author present for `textWindowMs`. Otherwise chat inside a game
-   * channel breaks the silence rule.
+   * its author present for `textWindowMs`. Otherwise chat breaks the
+   * silence rule only where the game is announced: in the announcement
+   * channels when any are configured, else in the game channels.
    * @param {Object} message `{ actor, target, object }`
    */
   async _handleMessage (message) {
@@ -574,11 +592,7 @@ class IdleRPG extends Service {
       user.spokeIn = message.target;
       return this._settle(user, wasPresent);
     }
-    if (!this.settings.penalties) return null;
-    if (!this._announcementTargets().includes(message.target)) {
-      if (!this.content.channels[message.target]) return null;
-      if (!this._channelAllowed(message.target)) return null;
-    }
+    if (!this._penalizedIn(message.target)) return null;
     const player = this.content.players[message.actor];
     if (!player) return null;
     const record = new Player(player);
@@ -587,6 +601,20 @@ class IdleRPG extends Service {
     this._dirty = true;
     if (notify) this.announce(`${this._publicName(player)} has disrupted the peace!  Penalties have been applied, but life goes on.`);
     return player;
+  }
+
+  /**
+   * Whether chatting in `target` breaks the silence rule. With announcement
+   * channels configured only those count, so voice channels' text chat and
+   * every other channel a player happens to be present in stay free.
+   * @param {string} target
+   * @returns {boolean}
+   */
+  _penalizedIn (target) {
+    if (!this.settings.penalties || !target) return false;
+    const announcements = this._announcementTargets();
+    if (announcements.length) return announcements.includes(target);
+    return !!this.content.channels[target] && this._channelAllowed(target);
   }
 
   async _welcomePlayer (player) {
@@ -675,29 +703,112 @@ class IdleRPG extends Service {
    * @returns {Array<Object>}
    */
   leaderboard (limit = 50) {
+    const rows = this._ranked().map((entry) => entry.row);
+    const max = Number(limit) > 0 ? Math.floor(Number(limit)) : rows.length;
+    return rows.slice(0, max);
+  }
+
+  /**
+   * Public profile of one player, found by the `slug` the leaderboard
+   * lists: display name, standing, gear, and game numbers — never a service
+   * id. Players without a public name have no profile.
+   * @param {string} slug
+   * @returns {Object|null}
+   */
+  profile (slug) {
+    const wanted = String(slug || '').toLowerCase();
+    if (!wanted) return null;
+    const ranked = this._ranked();
+    const entry = ranked.find((candidate) => candidate.row.slug === wanted);
+    if (!entry) return null;
+    const player = entry.player;
+    const level = player.level;
+    const gear = (stack) => {
+      const stats = items.gearStats(stack);
+      return { name: items.displayName(stack), rarity: items.rarity(stack), damage: stats.damage, armor: stats.armor };
+    };
+    const slain = Object.entries(player.slain)
+      .map(([id, count]) => {
+        const creature = creatures.get(id);
+        return { id, name: creature ? creature.name : id, count };
+      })
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, TOP_CREATURES);
+    return Object.assign({}, entry.row, {
+      players: ranked.length,
+      levelExperience: Player.experienceForLevel(level),
+      nextLevelExperience: Player.experienceForLevel(level + 1),
+      battles: { won: player.battles.won, lost: player.battles.lost, total: player.battles.won + player.battles.lost },
+      attributes: player.attributes,
+      armor: items.equipmentArmor(player.equipment),
+      equipment: bodies.slots(Player.BODY)
+        .filter((slot) => player.equipment[slot])
+        .map((slot) => Object.assign({ slot }, gear(player.equipment[slot]))),
+      inventory: player.inventory.map((stack) => ({ name: items.displayName(stack), rarity: items.rarity(stack) })),
+      slain
+    });
+  }
+
+  /**
+   * Every player but the bot, best first, as `{ id, player, row }` where
+   * `row` is the public leaderboard entry. Ids stay internal.
+   * @returns {Array<Object>}
+   */
+  _ranked () {
     const users = this.content.users;
-    const rows = Object.values(this.content.players)
+    const slugs = this._slugs();
+    return Object.values(this.content.players)
       .filter((record) => record.id !== this.settings.alias)
       .map((record) => {
         const player = new Player(record);
         const user = users[record.id];
         return {
-          name: this._publicName(player),
-          level: player.level,
-          experience: player.experience,
-          wealth: player.wealth,
-          kills: player.kills,
-          weapon: player.weapon,
-          hours: round1(player.presenceMs / HOUR_MS),
-          ticks: player.ticks,
-          firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
-          lastSeen: player.lastSeen ? player.lastSeen.slice(0, 10) : null,
-          online: this._isPresent(user)
+          id: record.id,
+          player,
+          row: {
+            name: this._publicName(player),
+            slug: slugs[record.id] || null,
+            level: player.level,
+            experience: player.experience,
+            wealth: player.wealth,
+            kills: player.kills,
+            weapon: player.weapon,
+            hours: round1(player.presenceMs / HOUR_MS),
+            ticks: player.ticks,
+            firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
+            lastSeen: player.lastSeen ? player.lastSeen.slice(0, 10) : null,
+            online: this._isPresent(user)
+          }
         };
       })
-      .sort((a, b) => b.experience - a.experience || b.hours - a.hours || a.name.localeCompare(b.name));
-    const max = Number(limit) > 0 ? Math.floor(Number(limit)) : rows.length;
-    return rows.slice(0, max).map((row, index) => Object.assign({ rank: index + 1 }, row));
+      .sort((a, b) => b.row.experience - a.row.experience || b.row.hours - a.row.hours || a.row.name.localeCompare(b.row.name))
+      .map((entry, index) => Object.assign(entry, { row: Object.assign({ rank: index + 1 }, entry.row) }));
+  }
+
+  /**
+   * Profile slug per player id, from the public name. Players sharing a
+   * name are told apart by who arrived first (`name`, `name-2`, …), so a
+   * player's slug does not move as the ranking changes.
+   * @returns {Object} `{ [id]: slug }`
+   */
+  _slugs () {
+    const named = Object.values(this.content.players)
+      .filter((record) => record.id !== this.settings.alias && this._publicName(record) !== UNKNOWN_NAME)
+      .map((record) => ({ id: record.id, base: slugify(record.name), firstSeen: record.firstSeen || '' }))
+      .filter((entry) => entry.base)
+      .sort((a, b) => {
+        if (a.firstSeen !== b.firstSeen) return !a.firstSeen ? 1 : !b.firstSeen ? -1 : a.firstSeen < b.firstSeen ? -1 : 1;
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      });
+    const taken = new Set();
+    const slugs = {};
+    for (const entry of named) {
+      let slug = entry.base;
+      for (let n = 2; taken.has(slug); n++) slug = `${entry.base}-${n}`;
+      taken.add(slug);
+      slugs[entry.id] = slug;
+    }
+    return slugs;
   }
 
   // ### Commands

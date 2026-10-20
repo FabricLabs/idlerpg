@@ -270,7 +270,7 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
-  it('penalizes chat in an announcement channel', async function () {
+  it('penalizes chat only in the announcement channel when one is set', async function () {
     const announce = 'discord/channels/announce';
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: [announce], verbosity: 0 });
     await rpg.start();
@@ -279,6 +279,8 @@ describe('IdleRPG', function () {
     const before = rpg.content.players['discord/users/1'].wealth;
     await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/elsewhere', object: 'hello' });
     assert.strictEqual(rpg.content.players['discord/users/1'].wealth, before);
+    await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/voice', object: 'hello from voice chat' });
+    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, before, 'a game channel is free once announcements are set');
     await rpg._handleMessage({ actor: 'discord/users/1', target: announce, object: 'hello' });
     assert.strictEqual(rpg.content.players['discord/users/1'].wealth, Math.floor(before / 2));
     await rpg.stop();
@@ -396,6 +398,48 @@ describe('IdleRPG', function () {
     assert.ok(messages.some((m) => m.startsWith('alice found **Leather Gauntlets of the Fox**.')));
     assert.strictEqual(player.weapon, 'Keen Sword of the Bear');
     assert.strictEqual(player.equipment.gauntlets.suffix, 'fox');
+  });
+
+  it('gives each named player a stable profile slug and a public profile', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    const players = rpg.content.players;
+    players['discord/users/1'] = { id: 'discord/users/1', name: 'Ace Pilot', experience: 50, firstSeen: '2026-01-02T00:00:00.000Z' };
+    players['discord/users/2'] = { id: 'discord/users/2', name: 'ace pilot', experience: 900, firstSeen: '2026-03-01T00:00:00.000Z' };
+    players['discord/users/3'] = { id: 'discord/users/3', name: 'Zoë', experience: 10, firstSeen: '2026-02-01T00:00:00.000Z' };
+    players['discord/users/4'] = { id: 'discord/users/4', name: 'discord/users/4', experience: 5000 };
+
+    const board = rpg.leaderboard();
+    assert.deepStrictEqual(board.map((row) => [row.name, row.slug]), [
+      ['Unknown pilot', null],
+      ['ace pilot', 'ace-pilot-2'],
+      ['Ace Pilot', 'ace-pilot'],
+      ['Zoë', 'zoe']
+    ]);
+
+    const player = new Player(players['discord/users/2']);
+    player.receive(items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' }));
+    player.recordBattle(true, 'wolf');
+    player.recordBattle(false);
+    Object.assign(players['discord/users/2'], player.toObject());
+
+    const profile = rpg.profile('ACE-PILOT-2');
+    assert.strictEqual(profile.name, 'ace pilot');
+    assert.strictEqual(profile.rank, 2);
+    assert.strictEqual(profile.players, 4);
+    assert.strictEqual(profile.weapon, 'Keen Sword of the Bear');
+    assert.deepStrictEqual(profile.battles, { won: 1, lost: 1, total: 2 });
+    assert.strictEqual(profile.equipment[0].slot, 'main-hand');
+    assert.strictEqual(profile.equipment[0].rarity, 'legendary');
+    assert.ok(profile.equipment[0].damage > 0);
+    assert.strictEqual(profile.slain[0].count, 1);
+    assert.ok(profile.nextLevelExperience > profile.experience && profile.experience >= profile.levelExperience);
+    assert.ok(!JSON.stringify(profile).includes('discord/users'), 'profile must not leak user ids');
+
+    assert.strictEqual(rpg.profile('ace-pilot').name, 'Ace Pilot');
+    assert.strictEqual(rpg.profile('unknown-pilot'), null);
+    assert.strictEqual(rpg.profile(''), null);
+    await rpg.stop();
   });
 
   it('migrates saved players when restoring', async function () {
