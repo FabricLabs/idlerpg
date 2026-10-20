@@ -13,6 +13,7 @@
 // loot), and each game channel is a named place with a biome.
 
 const crypto = require('crypto');
+const Message = require('@fabric/core/types/message');
 const Service = require('@fabric/core/types/service');
 const WorldClock = require('@fabric/rpg/types/clock');
 const Encounter = require('@fabric/rpg/types/encounter');
@@ -42,6 +43,27 @@ const UNKNOWN_NAME = 'Unknown pilot';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const TOP_CREATURES = 5;
+const PLAYER_ID_BYTES = 8;
+
+/**
+ * The remote account behind a namespaced user id: `<service>/users/<id>`
+ * becomes `{ service, id }`; anything else is kept whole with no service.
+ * @param {string} key
+ * @returns {{ service: string|null, id: string }}
+ */
+function accountOf (key) {
+  const match = /^([^/]+)\/users\/(.+)$/.exec(String(key));
+  return match ? { service: match[1], id: match[2] } : { service: null, id: String(key) };
+}
+
+/**
+ * Namespaced user id of a remote account (the inverse of `accountOf`).
+ * @param {{ service: string|null, id: string }} account
+ * @returns {string}
+ */
+function accountKey (account) {
+  return account.service ? `${account.service}/users/${account.id}` : account.id;
+}
 
 function dayKey (ms) {
   return new Date(ms).toISOString().slice(0, 10);
@@ -55,21 +77,6 @@ function windowDays (now, days) {
 
 function round1 (n) {
   return Math.round(n * 10) / 10;
-}
-
-/**
- * URL-safe form of a display name: lowercase letters and digits from any
- * script, runs of anything else collapsed to `-`.
- * @param {string} name
- * @returns {string} Empty when nothing usable remains.
- */
-function slugify (name) {
-  return String(name || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 function article (name) {
@@ -181,8 +188,10 @@ class IdleRPG extends Service {
       users: {},
       players: {},
       channels: {},
-      stats: { totalPresentMs: 0, totalTicks: 0, days: {}, lastTick: null, startedAt: null, seed: null, battles: { won: 0, lost: 0 }, slain: {} }
+      stats: { totalPresentMs: 0, totalTicks: 0, days: {}, lastTick: null, startedAt: null, seed: null, playerIds: 0, battles: { won: 0, lost: 0 }, slain: {} }
     };
+    // Namespaced user id (`<service>/users/<id>`) → player id, rebuilt from the players' accounts.
+    this._accounts = {};
 
     this.worldClock = new WorldClock({ interval: this.settings.tickMs, now: this.settings.now });
     this.worldClock.on('tick', () => {
@@ -220,6 +229,7 @@ class IdleRPG extends Service {
     if (!stats.startedAt) stats.startedAt = new Date(this.now).toISOString();
     if (this.settings.seed != null) stats.seed = String(this.settings.seed);
     if (!stats.seed) stats.seed = crypto.randomBytes(16).toString('hex');
+    this._migratePlayers();
     this.worldClock.clock = stats.totalTicks;
     if (this.settings.autostart && this.settings.tickMs > 0) this.worldClock.start();
     this.emit('ready');
@@ -249,10 +259,6 @@ class IdleRPG extends Service {
     if (!content.stats.days) content.stats.days = {};
     if (!content.stats.battles) content.stats.battles = { won: 0, lost: 0 };
     if (!content.stats.slain) content.stats.slain = {};
-    // Older saves predate attributes and gear; Player fills them in.
-    for (const [id, record] of Object.entries(content.players)) {
-      content.players[id] = new Player(record).toObject();
-    }
     // Nobody is known to be present after a restart until the host says so.
     for (const user of Object.values(content.users)) {
       user.presence = 'offline';
@@ -272,7 +278,96 @@ class IdleRPG extends Service {
     }
   }
 
+  /**
+   * Bring every player record up to date and index their remote accounts.
+   * Saves from before remote accounts kept each player under its namespaced
+   * user id (`discord/users/<id>`); such a record moves to a player id of its
+   * own with that account as its first, and keeps everything it tracked —
+   * experience, gear, battles, history, and the day buckets that counted it.
+   * Older saves also predate attributes and gear; `Player` fills them in.
+   */
+  _migratePlayers () {
+    const content = this.content;
+    const players = {};
+    const legacy = [];
+    for (const [key, record] of Object.entries(content.players || {})) {
+      if (!record || typeof record !== 'object') continue;
+      if (Array.isArray(record.accounts) && record.accounts.length && record.id) players[record.id] = record;
+      else legacy.push({ key: record.id || key, record });
+    }
+    const taken = new Set(Object.keys(players));
+    for (const { key, record } of legacy) {
+      const id = this._newPlayerId(taken);
+      taken.add(id);
+      players[id] = Object.assign({}, record, {
+        id,
+        name: record.name && record.name !== key ? record.name : null,
+        accounts: [accountOf(key)]
+      });
+    }
+    content.players = {};
+    this._accounts = {};
+    for (const record of Object.values(players)) {
+      const player = new Player(record).toObject();
+      content.players[player.id] = player;
+      for (const account of player.accounts) {
+        const key = accountKey(account);
+        if (!this._accounts[key]) this._accounts[key] = player.id;
+      }
+    }
+    if (!legacy.length) return;
+    for (const bucket of Object.values(content.stats.days || {})) {
+      const counted = {};
+      for (const key of Object.keys(bucket.players || {})) counted[this._accounts[key] || key] = 1;
+      bucket.players = counted;
+    }
+    this._dirty = true;
+  }
+
+  /**
+   * A new player id: a hash of the private world seed and a count of ids
+   * issued, so it reveals nothing about the player's accounts and a seeded
+   * world replays the same ids.
+   * @param {Set<string>} [taken] Ids already in use.
+   * @returns {string}
+   */
+  _newPlayerId (taken = new Set(Object.keys(this.content.players))) {
+    const stats = this.content.stats;
+    let id;
+    do {
+      stats.playerIds = (stats.playerIds || 0) + 1;
+      const source = stats.seed ? `${stats.seed}:player:${stats.playerIds}` : crypto.randomBytes(16);
+      id = crypto.createHash('sha256').update(source).digest('hex').slice(0, PLAYER_ID_BYTES * 2);
+    } while (taken.has(id));
+    return id;
+  }
+
   // ### Clock
+
+  /**
+   * Service heartbeat with a summary instead of the whole game: players with
+   * gear, bags, and daily history outgrow the 32 KiB wire Message limit the
+   * core beat checks against. The full state lives in the Store.
+   * @emits Message#beat
+   * @returns {IdleRPG}
+   */
+  beat () {
+    ++this._clock;
+    const stats = this.content.stats;
+    const beat = Message.fromVector(['Generic', {
+      clock: this._clock,
+      created: new Date(this.now).toISOString(),
+      state: {
+        players: Object.keys(this.content.players).length,
+        present: this._presentPlayerIds().size,
+        totalTicks: stats.totalTicks,
+        lastTick: stats.lastTick
+      }
+    }]);
+    this.emit('beat', beat);
+    this.commit();
+    return this;
+  }
 
   /**
    * One clock cycle: every present player is credited `tickMs` of presence
@@ -290,15 +385,18 @@ class IdleRPG extends Service {
         user.since = null;
       }
     }
-    const present = this._presentUsers();
+    const credited = new Set();
 
-    for (const user of present) {
+    // A player present on several accounts is credited once.
+    for (const user of this._presentUsers()) {
       const player = this._player(user.id, user.name);
+      if (credited.has(player.id)) continue;
+      credited.add(player.id);
       const record = new Player(player);
       const outcome = record.reward(this.settings.tickMs, this.settings);
       record.lastSeen = new Date(now).toISOString();
       bucket.presentMs += this.settings.tickMs;
-      bucket.players[user.id] = 1;
+      bucket.players[player.id] = 1;
       stats.totalPresentMs += this.settings.tickMs;
       if (outcome.leveled) this.announce(`${this._publicName(record)} has reached level ${outcome.level}!`);
       this._rollForEncounter(record, user);
@@ -306,14 +404,14 @@ class IdleRPG extends Service {
     }
 
     bucket.ticks += 1;
-    bucket.peak = Math.max(bucket.peak, present.length);
+    bucket.peak = Math.max(bucket.peak, credited.size);
     stats.totalTicks += 1;
     this.worldClock.clock = stats.totalTicks;
     stats.lastTick = new Date(now).toISOString();
     this._pruneDays(now);
 
     await this._persist();
-    this.emit('tick', { clock: stats.totalTicks, presentNow: present.length, now });
+    this.emit('tick', { clock: stats.totalTicks, presentNow: credited.size, now });
     return this;
   }
 
@@ -427,23 +525,72 @@ class IdleRPG extends Service {
     } else if (name && users[id].name !== name) {
       users[id].name = name;
     }
-    if (name && name !== id && this.content.players[id] && this.content.players[id].name !== name) {
-      this.content.players[id].name = name;
+    const player = this._playerOf(id);
+    if (name && name !== id && player && player.name !== name) {
+      player.name = name;
       this._dirty = true;
     }
     return users[id];
   }
 
-  _player (id, name) {
-    const players = this.content.players;
-    if (!players[id]) {
-      players[id] = new Player({ id, name, firstSeen: new Date(this.now).toISOString() }).toObject();
+  /**
+   * The player reached through a remote account, or null.
+   * @param {string} key Namespaced user id (`<service>/users/<id>`).
+   * @returns {Object|null} Stored player record.
+   */
+  playerFor (key) {
+    return this._playerOf(key);
+  }
+
+  /**
+   * Attach another remote account to the player behind `key` — the same
+   * person on a second chat network, say. Refused when that account already
+   * belongs to another player.
+   * @param {string} key Namespaced user id of an account the player has (or will have).
+   * @param {string} other Namespaced user id of the account to attach.
+   * @returns {Object|null} The player, or null when refused.
+   */
+  linkAccount (key, other) {
+    const owner = this._playerOf(other);
+    const known = this._playerOf(key);
+    if (owner) return known && owner.id === known.id ? known : null;
+    const player = known || this._player(key);
+    player.accounts.push(accountOf(other));
+    this._accounts[other] = player.id;
+    this._dirty = true;
+    return player;
+  }
+
+  _playerOf (key) {
+    const id = key == null ? null : this._accounts[key];
+    return id ? this.content.players[id] || null : null;
+  }
+
+  /**
+   * The player for a remote account, created on first sight with that
+   * account as their first.
+   * @param {string} key Namespaced user id (`<service>/users/<id>`).
+   * @param {string} [name] Display name; ignored when it is just the id.
+   * @returns {Object} Stored player record.
+   */
+  _player (key, name) {
+    const known = name && name !== key ? name : null;
+    let player = this._playerOf(key);
+    if (!player) {
+      const id = this._newPlayerId();
+      player = new Player({ id, name: known, accounts: [accountOf(key)], firstSeen: new Date(this.now).toISOString() }).toObject();
+      this.content.players[id] = player;
+      this._accounts[key] = id;
       this._dirty = true;
-    } else if (name && name !== id && players[id].name !== name) {
-      players[id].name = name;
+    } else if (known && player.name !== known) {
+      player.name = known;
       this._dirty = true;
     }
-    return players[id];
+    return player;
+  }
+
+  _isBot (record) {
+    return (record.accounts || []).some((account) => accountKey(account) === this.settings.alias);
   }
 
   _sources () {
@@ -465,6 +612,11 @@ class IdleRPG extends Service {
 
   _presentUsers () {
     return Object.values(this.content.users).filter((user) => this._isPresent(user));
+  }
+
+  // Players present now, however many of their accounts are.
+  _presentPlayerIds () {
+    return new Set(this._presentUsers().map((user) => this._accounts[user.id] || user.id));
   }
 
   /**
@@ -519,7 +671,7 @@ class IdleRPG extends Service {
    * @returns {string}
    */
   _publicName (player) {
-    return player.name && player.name !== player.id ? player.name : UNKNOWN_NAME;
+    return player.name || UNKNOWN_NAME;
   }
 
   /**
@@ -593,7 +745,7 @@ class IdleRPG extends Service {
       return this._settle(user, wasPresent);
     }
     if (!this._penalizedIn(message.target)) return null;
-    const player = this.content.players[message.actor];
+    const player = this._playerOf(message.actor);
     if (!player) return null;
     const record = new Player(player);
     const { notify } = record.penalize();
@@ -677,7 +829,7 @@ class IdleRPG extends Service {
       .slice(0, TOP_CREATURES);
     return {
       generatedAt: new Date(now).toISOString(),
-      presentNow: this._presentUsers().length,
+      presentNow: this._presentPlayerIds().size,
       uniquePlayers: players.length,
       totalPresentHours: round1(stats.totalPresentMs / HOUR_MS),
       totalTicks: stats.totalTicks,
@@ -698,7 +850,8 @@ class IdleRPG extends Service {
   }
 
   /**
-   * Public leaderboard: display names and game numbers only — no service ids.
+   * Public leaderboard: player ids, display names, and game numbers — never
+   * the ids of their chat accounts.
    * @param {number} [limit=50]
    * @returns {Array<Object>}
    */
@@ -709,17 +862,17 @@ class IdleRPG extends Service {
   }
 
   /**
-   * Public profile of one player, found by the `slug` the leaderboard
-   * lists: display name, standing, gear, and game numbers — never a service
-   * id. Players without a public name have no profile.
-   * @param {string} slug
+   * Public profile of one player, found by their player id — one id however
+   * many chat accounts they link, and unchanged by renames: display name,
+   * standing, gear, and game numbers — never the ids of their chat accounts.
+   * @param {string} id Player id, as the leaderboard lists it.
    * @returns {Object|null}
    */
-  profile (slug) {
-    const wanted = String(slug || '').toLowerCase();
+  profile (id) {
+    const wanted = String(id || '').toLowerCase();
     if (!wanted) return null;
     const ranked = this._ranked();
-    const entry = ranked.find((candidate) => candidate.row.slug === wanted);
+    const entry = ranked.find((candidate) => candidate.row.id === wanted);
     if (!entry) return null;
     const player = entry.player;
     const level = player.level;
@@ -756,18 +909,17 @@ class IdleRPG extends Service {
    */
   _ranked () {
     const users = this.content.users;
-    const slugs = this._slugs();
     return Object.values(this.content.players)
-      .filter((record) => record.id !== this.settings.alias)
+      .filter((record) => !this._isBot(record))
       .map((record) => {
         const player = new Player(record);
-        const user = users[record.id];
+        const online = player.accounts.some((account) => this._isPresent(users[accountKey(account)]));
         return {
           id: record.id,
           player,
           row: {
+            id: record.id,
             name: this._publicName(player),
-            slug: slugs[record.id] || null,
             level: player.level,
             experience: player.experience,
             wealth: player.wealth,
@@ -777,7 +929,7 @@ class IdleRPG extends Service {
             ticks: player.ticks,
             firstSeen: player.firstSeen ? player.firstSeen.slice(0, 10) : null,
             lastSeen: player.lastSeen ? player.lastSeen.slice(0, 10) : null,
-            online: this._isPresent(user)
+            online
           }
         };
       })
@@ -785,36 +937,10 @@ class IdleRPG extends Service {
       .map((entry, index) => Object.assign(entry, { row: Object.assign({ rank: index + 1 }, entry.row) }));
   }
 
-  /**
-   * Profile slug per player id, from the public name. Players sharing a
-   * name are told apart by who arrived first (`name`, `name-2`, …), so a
-   * player's slug does not move as the ranking changes.
-   * @returns {Object} `{ [id]: slug }`
-   */
-  _slugs () {
-    const named = Object.values(this.content.players)
-      .filter((record) => record.id !== this.settings.alias && this._publicName(record) !== UNKNOWN_NAME)
-      .map((record) => ({ id: record.id, base: slugify(record.name), firstSeen: record.firstSeen || '' }))
-      .filter((entry) => entry.base)
-      .sort((a, b) => {
-        if (a.firstSeen !== b.firstSeen) return !a.firstSeen ? 1 : !b.firstSeen ? -1 : a.firstSeen < b.firstSeen ? -1 : 1;
-        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-      });
-    const taken = new Set();
-    const slugs = {};
-    for (const entry of named) {
-      let slug = entry.base;
-      for (let n = 2; taken.has(slug); n++) slug = `${entry.base}-${n}`;
-      taken.add(slug);
-      slugs[entry.id] = slug;
-    }
-    return slugs;
-  }
-
   // ### Commands
 
   _profileFor (actor) {
-    const record = this.content.players[actor];
+    const record = this._playerOf(actor);
     return record ? new Player(record) : null;
   }
 
@@ -824,7 +950,7 @@ class IdleRPG extends Service {
   }
 
   async _handleMemberlistRequest () {
-    const members = Object.values(this.content.players).map((player) => player.name);
+    const members = Object.values(this.content.players).filter((player) => !this._isBot(player)).map((player) => this._publicName(player));
     return `Current memberlist for the \`idlerpg\` plugin:\n\n\`\`\`\n${JSON.stringify(members, null, '  ')}\n\`\`\``;
   }
 
@@ -846,7 +972,7 @@ class IdleRPG extends Service {
     const list = Object.values(this.content.players)
       .sort((a, b) => b.experience - a.experience)
       .slice(0, 10)
-      .map((player, n) => `${n + 1}. ${player.name}, with **${player.experience}** experience`);
+      .map((player, n) => `${n + 1}. ${this._publicName(player)}, with **${player.experience}** experience`);
     return `Leaderboard:\n${list.join('\n')}`;
   }
 
@@ -858,12 +984,12 @@ class IdleRPG extends Service {
     const targetName = parts[index + 2];
     if (!Number.isFinite(amount) || amount <= 0 || !targetName) return `Command format: \`!transfer <amount> <user>\``;
 
-    const actor = this.content.players[message.actor];
+    const actor = this._playerOf(message.actor);
     if (!actor) return `You have no wealth to transfer.`;
 
-    const prefix = message.actor.split('/').slice(0, 2).join('/');
-    const target = this.content.players[targetName] ||
-      this.content.players[`${prefix}/${targetName}`] ||
+    const service = accountOf(message.actor).service;
+    const target = this._playerOf(targetName) ||
+      (service ? this._playerOf(accountKey({ service, id: targetName })) : null) ||
       Object.values(this.content.players).find((player) => player.name === targetName);
     if (!target) return `Couldn't find ${targetName}.`;
     if (target.id === actor.id) return `You cannot transfer money to yourself.`;
@@ -874,9 +1000,11 @@ class IdleRPG extends Service {
     this._dirty = true;
     await this._persist();
 
-    this.emit('whisper', {
-      target: target.id,
-      object: `${actor.name} has transferred **${amount}** <small>IDLE</small> to your account!  Check your balance with \`!balance\`.`
+    // Whisper on the network the transfer came from when the target is there.
+    const account = target.accounts.find((entry) => entry.service === service) || target.accounts[0];
+    if (account) this.emit('whisper', {
+      target: accountKey(account),
+      object: `${this._publicName(actor)} has transferred **${amount}** <small>IDLE</small> to your account!  Check your balance with \`!balance\`.`
     });
 
     return `Balance transferred successfully!`;
@@ -887,3 +1015,5 @@ module.exports = IdleRPG;
 module.exports.Player = Player;
 module.exports.WorldClock = WorldClock;
 module.exports.STORE_KEY = STORE_KEY;
+module.exports.accountOf = accountOf;
+module.exports.accountKey = accountKey;

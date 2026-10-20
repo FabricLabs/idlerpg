@@ -50,6 +50,22 @@ function validStack (stack) {
   return !!(stack && typeof stack === 'object' && items.get(stack.id));
 }
 
+// Remote accounts as `{ service, id }`, dropping malformed and repeated ones.
+function loadAccounts (accounts) {
+  if (!Array.isArray(accounts)) return [];
+  const seen = new Set();
+  const list = [];
+  for (const account of accounts) {
+    if (!account || account.id == null || account.id === '') continue;
+    const entry = { service: account.service ? String(account.service) : null, id: String(account.id) };
+    const key = `${entry.service}\n${entry.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(entry);
+  }
+  return list;
+}
+
 function loadStack (stack, level) {
   const copy = Object.assign({}, stack);
   if (copy.level == null && items.isGear(items.get(copy.id))) copy.level = level;
@@ -58,20 +74,24 @@ function loadStack (stack, level) {
 
 /**
  * Pure player record for IdleRPG. Holds the game-relevant numbers for one
- * user and the arithmetic that changes them; persistence and presence
- * tracking live in the engine. Records saved before attributes and gear
+ * player and the arithmetic that changes them; persistence and presence
+ * tracking live in the engine. A player is reached through one or more
+ * remote accounts on chat networks. Records saved before attributes and gear
  * existed load with the attribute points their level has earned, and gear
  * saved before item levels loads at the player's level.
  */
 class Player {
   /**
    * @param {Object} [record]
-   * @param {string} record.id Namespaced user id (`<service>/users/<id>`).
-   * @param {string} [record.name]
+   * @param {string} record.id Player id, assigned by the engine.
+   * @param {string} [record.name] Display name; null until a host names the player.
+   * @param {Array<Object>} [record.accounts] Remote accounts `{ service, id }`,
+   *   e.g. `{ service: 'discord', id: '<snowflake>' }`.
    */
   constructor (record = {}) {
     this.id = record.id;
-    this.name = record.name || record.id;
+    this.name = record.name || null;
+    this.accounts = loadAccounts(record.accounts);
     this.experience = Number(record.experience) || 0;
     this.wealth = Number(record.wealth) || 0;
     this.presenceMs = Number(record.presenceMs) || 0;
@@ -281,6 +301,7 @@ class Player {
     return {
       id: this.id,
       name: this.name,
+      accounts: this.accounts.map((account) => Object.assign({}, account)),
       experience: this.experience,
       wealth: this.wealth,
       presenceMs: this.presenceMs,

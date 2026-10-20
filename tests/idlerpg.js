@@ -175,9 +175,9 @@ describe('IdleRPG', function () {
     time.advance(60000); await rpg.tick();
     report = rpg.report();
     assert.strictEqual(report.presentNow, 1);
-    assert.strictEqual(rpg.content.players['discord/users/1'].ticks, 3);
-    assert.strictEqual(rpg.content.players['discord/users/2'].ticks, 4);
-    assert.strictEqual(rpg.content.players['discord/users/1'].name, 'alice');
+    assert.strictEqual(rpg.playerFor('discord/users/1').ticks, 3);
+    assert.strictEqual(rpg.playerFor('discord/users/2').ticks, 4);
+    assert.strictEqual(rpg.playerFor('discord/users/1').name, 'alice');
     assert.ok(announcements.some((m) => m.object.startsWith('Welcome to IdleRPG, alice')));
     await rpg.stop();
   });
@@ -212,11 +212,11 @@ describe('IdleRPG', function () {
     await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/general', object: 'hello' });
     await rpg.tick();
     assert.strictEqual(rpg.report().presentNow, 0);
-    assert.strictEqual(rpg.content.players['discord/users/1'], undefined);
+    assert.strictEqual(rpg.playerFor('discord/users/1'), null);
     await rpg._handleJoin({ user: 'discord/users/3', channel: 'discord/channels/voice' });
     await rpg.tick();
     assert.strictEqual(rpg.report().presentNow, 1);
-    assert.strictEqual(rpg.content.players['discord/users/3'].ticks, 1);
+    assert.strictEqual(rpg.playerFor('discord/users/3').ticks, 1);
     await rpg.stop();
   });
 
@@ -231,7 +231,7 @@ describe('IdleRPG', function () {
     assert.strictEqual(rpg._placeFor(rpg.content.users['local/users/c']).key, placeFor('local/channels/general').key);
     time.advance(600000); await rpg.tick();
     time.advance(600000); await rpg.tick();
-    const player = rpg.content.players['local/users/c'];
+    const player = rpg.playerFor('local/users/c');
     assert.strictEqual(player.ticks, 1);
     assert.strictEqual(player.wealth, rpg.settings.perTickCapital);
     assert.strictEqual(rpg.report().presentNow, 0);
@@ -276,13 +276,13 @@ describe('IdleRPG', function () {
     await rpg.start();
     await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/voice' });
     await rpg.tick();
-    const before = rpg.content.players['discord/users/1'].wealth;
+    const before = rpg.playerFor('discord/users/1').wealth;
     await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/elsewhere', object: 'hello' });
-    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, before);
+    assert.strictEqual(rpg.playerFor('discord/users/1').wealth, before);
     await rpg._handleMessage({ actor: 'discord/users/1', target: 'discord/channels/voice', object: 'hello from voice chat' });
-    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, before, 'a game channel is free once announcements are set');
+    assert.strictEqual(rpg.playerFor('discord/users/1').wealth, before, 'a game channel is free once announcements are set');
     await rpg._handleMessage({ actor: 'discord/users/1', target: announce, object: 'hello' });
-    assert.strictEqual(rpg.content.players['discord/users/1'].wealth, Math.floor(before / 2));
+    assert.strictEqual(rpg.playerFor('discord/users/1').wealth, Math.floor(before / 2));
     await rpg.stop();
   });
 
@@ -291,11 +291,11 @@ describe('IdleRPG', function () {
     await rpg.start();
     await rpg._handleJoin({ user: 'local/users/a', channel: 'local/channels/idlerpg' });
     await rpg.tick();
-    const before = rpg.content.players['local/users/a'].wealth;
+    const before = rpg.playerFor('local/users/a').wealth;
     await rpg._handleMessage({ actor: 'local/users/a', target: 'local/channels/idlerpg', object: '!balance' });
-    assert.strictEqual(rpg.content.players['local/users/a'].wealth, before);
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth, before);
     await rpg._handleMessage({ actor: 'local/users/a', target: 'local/channels/idlerpg', object: 'hello' });
-    assert.strictEqual(rpg.content.players['local/users/a'].wealth, Math.floor(before / 2));
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth, Math.floor(before / 2));
     await rpg.stop();
   });
 
@@ -309,8 +309,8 @@ describe('IdleRPG', function () {
     rpg.on('whisper', (w) => whispers.push(w));
     const reply = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 5 b', target: 'local/channels/x' });
     assert.strictEqual(reply, 'Balance transferred successfully!');
-    assert.strictEqual(rpg.content.players['local/users/a'].wealth, 5);
-    assert.strictEqual(rpg.content.players['local/users/b'].wealth, 15);
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth, 5);
+    assert.strictEqual(rpg.playerFor('local/users/b').wealth, 15);
     assert.strictEqual(whispers[0].target, 'local/users/b');
     await rpg.stop();
   });
@@ -348,7 +348,7 @@ describe('IdleRPG', function () {
     assert.ok(report.slain.every((row) => row.name && row.count > 0));
     assert.ok(!JSON.stringify(report).includes('discord/users'));
 
-    const alice = players['discord/users/1'];
+    const alice = Object.values(players).find((p) => p.accounts.some((a) => a.service === 'discord' && a.id === '1'));
     assert.strictEqual(alice.kills, alice.battles.won);
     assert.ok(alice.kills > 0);
     assert.ok(Object.keys(alice.equipment).length > 0, 'loot was equipped');
@@ -388,7 +388,7 @@ describe('IdleRPG', function () {
     rpg.on('message', (m) => messages.push(m.object));
     await rpg.start();
     await rpg._registerUser({ id: 'local/users/a', name: 'alice', online: true });
-    const player = new Player(rpg.content.players['local/users/a']);
+    const player = new Player(rpg.playerFor('local/users/a'));
 
     rpg._applyEncounter(player, { type: 'item', item: items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' }), place: null });
     rpg._applyEncounter(player, { type: 'item', item: items.stack('leather-gauntlets', { suffix: 'fox' }), place: null });
@@ -400,31 +400,40 @@ describe('IdleRPG', function () {
     assert.strictEqual(player.equipment.gauntlets.suffix, 'fox');
   });
 
-  it('gives each named player a stable profile slug and a public profile', async function () {
+  it('gives each player an opaque id, with their chat account attached, that outlives renames', async function () {
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
     await rpg.start();
-    const players = rpg.content.players;
-    players['discord/users/1'] = { id: 'discord/users/1', name: 'Ace Pilot', experience: 50, firstSeen: '2026-01-02T00:00:00.000Z' };
-    players['discord/users/2'] = { id: 'discord/users/2', name: 'ace pilot', experience: 900, firstSeen: '2026-03-01T00:00:00.000Z' };
-    players['discord/users/3'] = { id: 'discord/users/3', name: 'Zoë', experience: 10, firstSeen: '2026-02-01T00:00:00.000Z' };
-    players['discord/users/4'] = { id: 'discord/users/4', name: 'discord/users/4', experience: 5000 };
+    const add = (key, name, experience) => Object.assign(rpg._player(key, name), { experience });
+    add('discord/users/1', 'Ace Pilot', 50);
+    add('discord/users/2', 'ace pilot', 900);
+    add('discord/users/3', 'Zoë', 10);
+    add('discord/users/4', 'discord/users/4', 5000);
+    const ace = rpg.playerFor('discord/users/2');
+    assert.deepStrictEqual(ace.accounts, [{ service: 'discord', id: '2' }]);
+    assert.strictEqual(rpg.playerFor('discord/users/4').name, null, 'a chat id is never kept as a name');
 
     const board = rpg.leaderboard();
-    assert.deepStrictEqual(board.map((row) => [row.name, row.slug]), [
-      ['Unknown pilot', null],
-      ['ace pilot', 'ace-pilot-2'],
-      ['Ace Pilot', 'ace-pilot'],
-      ['Zoë', 'zoe']
-    ]);
+    assert.deepStrictEqual(board.map((row) => row.name), ['Unknown pilot', 'ace pilot', 'Ace Pilot', 'Zoë']);
+    const ids = board.map((row) => row.id);
+    assert.ok(ids.every((id) => /^[0-9a-f]{16}$/.test(id)), 'player ids are opaque hex');
+    assert.strictEqual(new Set(ids).size, ids.length, 'player ids are unique');
+    const aceId = ids[1];
+    assert.strictEqual(aceId, ace.id);
 
-    const player = new Player(players['discord/users/2']);
+    rpg._player('discord/users/2', 'Renamed Ace');
+    assert.strictEqual(rpg.leaderboard()[1].id, aceId, 'a rename keeps the player id');
+    assert.strictEqual(rpg.profile(aceId).name, 'Renamed Ace');
+    assert.strictEqual(rpg.profile(ids[0]).name, 'Unknown pilot');
+
+    const player = new Player(ace);
     player.receive(items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' }));
     player.recordBattle(true, 'wolf');
     player.recordBattle(false);
-    Object.assign(players['discord/users/2'], player.toObject());
+    Object.assign(ace, player.toObject());
 
-    const profile = rpg.profile('ACE-PILOT-2');
-    assert.strictEqual(profile.name, 'ace pilot');
+    const profile = rpg.profile(aceId.toUpperCase());
+    assert.strictEqual(profile.name, 'Renamed Ace');
+    assert.strictEqual(profile.id, aceId);
     assert.strictEqual(profile.rank, 2);
     assert.strictEqual(profile.players, 4);
     assert.strictEqual(profile.weapon, 'Keen Sword of the Bear');
@@ -436,26 +445,112 @@ describe('IdleRPG', function () {
     assert.ok(profile.nextLevelExperience > profile.experience && profile.experience >= profile.levelExperience);
     assert.ok(!JSON.stringify(profile).includes('discord/users'), 'profile must not leak user ids');
 
-    assert.strictEqual(rpg.profile('ace-pilot').name, 'Ace Pilot');
-    assert.strictEqual(rpg.profile('unknown-pilot'), null);
+    assert.strictEqual(rpg.profile('ace-pilot'), null, 'names do not find pages');
+    assert.strictEqual(rpg.profile('discord/users/2'), null, 'chat accounts do not find pages');
+    assert.strictEqual(rpg.profile('2'), null);
     assert.strictEqual(rpg.profile(''), null);
     await rpg.stop();
   });
 
-  it('migrates saved players when restoring', async function () {
+  it('credits a player present on several accounts once', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'alice' });
+    const player = rpg.linkAccount('discord/users/1', 'matrix/users/@alice:example.org');
+    assert.deepStrictEqual(player.accounts, [{ service: 'discord', id: '1' }, { service: 'matrix', id: '@alice:example.org' }]);
+    assert.strictEqual(rpg.playerFor('matrix/users/@alice:example.org'), player);
+
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    await rpg._handleJoin({ user: 'matrix/users/@alice:example.org', channel: 'matrix/channels/c1' });
+    await rpg.tick();
+    assert.strictEqual(rpg.playerFor('discord/users/1').ticks, 1);
+    assert.strictEqual(rpg.report().presentNow, 1);
+    assert.strictEqual(rpg.report().uniquePlayers, 1);
+    assert.strictEqual(rpg.report().history[29].players, 1);
+    const [row] = rpg.leaderboard();
+    assert.strictEqual(row.id, player.id, 'one page id for every linked account');
+    assert.strictEqual(rpg.profile(player.id).name, 'alice');
+    assert.ok(!/discord|matrix|@alice/.test(JSON.stringify([row, rpg.profile(player.id)])), 'no chat account ids');
+
+    await rpg._handlePart({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    assert.strictEqual(rpg.leaderboard()[0].online, true, 'still present on the other network');
+    assert.strictEqual(rpg.linkAccount('discord/users/2', 'matrix/users/@alice:example.org'), null, 'an account belongs to one player');
+    assert.strictEqual(rpg.playerFor('discord/users/2'), null);
+    await rpg.stop();
+  });
+
+  it('beats a compact summary however large the game grows', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    for (let i = 0; i < 200; i++) {
+      const player = new Player({ id: `discord/users/${i}`, name: `pilot ${i}`, experience: 5000 });
+      for (let n = 0; n < 10; n++) player.receive(items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' }));
+      rpg.content.players[player.id] = player.toObject();
+    }
+    assert.ok(JSON.stringify(rpg.content).length > 32768, 'state is past the wire limit');
+    const errors = [];
+    const beats = [];
+    rpg.on('error', (error) => errors.push(error));
+    rpg.on('beat', (beat) => beats.push(beat));
+    rpg.beat();
+    assert.deepStrictEqual(errors, []);
+    assert.strictEqual(beats.length, 1);
+    const body = JSON.parse(beats[0].data);
+    assert.strictEqual(body.state.players, 200);
+    assert.ok(!beats[0].data.includes('discord/users'), 'beat carries no user ids');
+    await rpg.stop();
+  });
+
+  it('migrates players saved under their chat id without losing what they tracked', async function () {
     const dir = tmpStore();
     const first = new IdleRPG({ path: dir, autostart: false, luck: 0, verbosity: 0 });
     await first.start();
-    first.content.players['local/users/a'] = { id: 'local/users/a', name: 'a', experience: 1000, wealth: 3, ticks: 50, inventory: [] };
+    const sword = items.stack('sword', { quality: 80, prefix: 'keen', suffix: 'bear' });
+    // The shape saved before players had remote accounts.
+    first.content.players = {
+      'local/users/a': {
+        id: 'local/users/a', name: 'a', experience: 1000, wealth: 3, ticks: 50, presenceMs: 3000000,
+        kills: 4, battles: { won: 4, lost: 1 }, slain: { wolf: 4 }, cooldown: 2,
+        equipment: { 'main-hand': sword }, inventory: [items.stack('hide')],
+        firstSeen: '2026-01-01T00:00:00.000Z', lastSeen: '2026-01-02T00:00:00.000Z'
+      },
+      'discord/users/7': { id: 'discord/users/7', name: 'discord/users/7', experience: 10, publicId: 'abcdef0123456789' }
+    };
+    first.content.stats.days['2026-01-01'] = { presentMs: 1200000, peak: 2, ticks: 1, players: { 'local/users/a': 1, 'discord/users/7': 1 } };
     await first.stop();
 
     const second = new IdleRPG({ path: dir, autostart: false, verbosity: 0 });
     await second.start();
-    const record = second.content.players['local/users/a'];
-    assert.strictEqual(record.attributes.strength, 12);
-    assert.deepStrictEqual(record.battles, { won: 0, lost: 0 });
+    const a = second.playerFor('local/users/a');
+    assert.match(a.id, /^[0-9a-f]{16}$/, 'a player id of its own');
+    assert.deepStrictEqual(a.accounts, [{ service: 'local', id: 'a' }]);
+    assert.strictEqual(a.name, 'a');
+    for (const [field, value] of Object.entries({ experience: 1000, wealth: 3, ticks: 50, presenceMs: 3000000, kills: 4, cooldown: 2, firstSeen: '2026-01-01T00:00:00.000Z', lastSeen: '2026-01-02T00:00:00.000Z' })) {
+      assert.strictEqual(a[field], value, field);
+    }
+    assert.deepStrictEqual(a.battles, { won: 4, lost: 1 });
+    assert.deepStrictEqual(a.slain, { wolf: 4 });
+    assert.strictEqual(a.equipment['main-hand'].id, 'sword');
+    assert.strictEqual(a.inventory[0].id, 'hide');
+    assert.strictEqual(a.attributes.strength, 12, 'attributes filled in for the level');
+
+    const unnamed = second.playerFor('discord/users/7');
+    assert.match(unnamed.id, /^[0-9a-f]{16}$/);
+    assert.notStrictEqual(unnamed.id, 'abcdef0123456789', 'old page ids are not kept');
+    assert.ok(!('publicId' in second.content.players[unnamed.id]), 'old page ids are dropped from the save');
+    assert.strictEqual(unnamed.name, null, 'a chat id is never kept as a name');
+    assert.deepStrictEqual(unnamed.accounts, [{ service: 'discord', id: '7' }]);
+    assert.deepStrictEqual(Object.keys(second.content.players).sort(), [a.id, unnamed.id].sort());
+    assert.deepStrictEqual(Object.keys(second.content.stats.days['2026-01-01'].players).sort(), [a.id, unnamed.id].sort(), 'day buckets count players');
+    assert.strictEqual(second.report().uniquePlayers, 2);
     assert.ok(second.content.stats.seed, 'a world seed is created and saved');
     await second.stop();
+
+    const third = new IdleRPG({ path: dir, autostart: false, verbosity: 0 });
+    await third.start();
+    assert.strictEqual(third.playerFor('local/users/a').id, a.id, 'the player id is saved');
+    assert.strictEqual(third.playerFor('local/users/a').experience, 1000);
+    await third.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -474,7 +569,7 @@ describe('IdleRPG', function () {
     assert.strictEqual(report.totalTicks, 2);
     assert.strictEqual(report.uniquePlayers, 1);
     assert.strictEqual(report.presentNow, 0);
-    assert.strictEqual(second.content.players['local/users/a'].ticks, 2);
+    assert.strictEqual(second.playerFor('local/users/a').ticks, 2);
     await second.stop();
     fs.rmSync(dir, { recursive: true, force: true });
   });

@@ -97,6 +97,18 @@ The default is `['channel', 'status']`. The Doorman Discord adapter marks
 anyone who posts as online, so a Discord game that should only pay voice
 presence sets `sources: ['channel']`.
 
+### Players and accounts
+Events name users by their chat account (`<service>/users/<id>`, e.g.
+`discord/users/<snowflake>`). Each player has an id of their own and a list of
+remote `accounts` (`{ service, id }`); the first account they appear on is
+attached when they are created, and `linkAccount(key, other)` attaches more —
+the same person on another network plays as one player, credited once per
+tick. `playerFor(key)` finds the player behind an account. The leaderboard
+and `profile(id)` use the player id — one id however many accounts a player
+links — and never show account ids. Saves from before accounts existed, which
+kept each player under their chat account, move to this shape on start with
+everything they tracked.
+
 For detailed documentation, see [the `docs` folder][docs].  Happy hacking!
 
 ## The World
