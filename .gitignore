@@ -59,3 +59,8 @@ typings/
 
 # local database
 data/idlerpg
+
+# Fabric stores and local settings
+stores/
+settings/local.js
+reports/coverage
