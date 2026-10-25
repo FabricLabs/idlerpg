@@ -47,6 +47,15 @@ describe('Player', function () {
     }
   });
 
+  it('gives stackable items a whole count when loaded or received', function () {
+    const player = new Player({ id: 'a', inventory: [{ id: 'stone' }, { id: 'wood', count: 'x' }] });
+    assert.deepStrictEqual(player.inventory.map((stack) => [stack.id, stack.count]), [['stone', 1], ['wood', 1]]);
+    player.receive({ id: 'stone', count: 3 });
+    player.receive({ id: 'stone' });
+    assert.strictEqual(player.inventory.find((stack) => stack.id === 'stone').count, 5);
+    assert.ok(JSON.stringify(player.inventory).includes('"count":5'));
+  });
+
   it('penalizes by halving wealth', function () {
     const player = new Player({ id: 'a', wealth: 100 });
     assert.deepStrictEqual(player.penalize(), { notify: true });

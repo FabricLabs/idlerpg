@@ -37,32 +37,36 @@ In the `examples` directory, you can find the following sample program:
 'use strict';
 
 const IdleRPG = require('idlerpg');
-const game = new IdleRPG({ interval: 1000 });
-const name = 'Yorick';
-const friend = 'Friend';
+const game = new IdleRPG({ interval: 2000, path: './stores/simple' });
+const user = 'local/users/Yorick';
+const channel = 'local/channels/idlerpg';
 
 async function main () {
-  game.on('patches', function (patches) {
-    game.fabric.applyPatches(patches);
-  });
+  game.on('tick', (tick) => console.log('tick:', tick));
+  game.on('message', (msg) => console.log('[MESSAGE]', msg.object));
 
-  game.on('message', function (msg) {
-    console.log('[MESSAGE]', msg);
-  });
+  await game.start();
 
-  game.on('ready', function () {
-    game.fabric.trust(game);
-    game.fabric.replay('log.json');
-  });
+  // Yorick walks into the game channel; every tick from now on rewards him.
+  await game._registerUser({ id: user, name: 'Yorick' });
+  await game._handleJoin({ user, channel });
 
-  return game.start();
+  // ...and leaves after a few ticks.
+  setTimeout(async () => {
+    await game._handlePart({ user, channel });
+    console.log('report:', game.report());
+    await game.stop();
+  }, 9000);
+
+  return game;
 }
 
 module.exports = main();
 ```
 
-This minimal program demonstrates the full IdleRPG loop using a "local" service,
-including composing a local copy of the in-game state (stored in `game.fabric`).
+This minimal program drives the engine directly, with no chat network: the
+game keeps its state in a Fabric Store at `path`, and `report()` returns the
+aggregate statistics.
 
 ### `idlerpg-bot`
 [`idlerpg-bot`][bot] is a [[`doorman`](https://github.com/FabricLabs/doorman)]-
@@ -71,14 +75,24 @@ operates, as well as how to integrate IdleRPG into your own applications.
 
 ## API
 IdleRPG uses [an event-driven API][fabric-events] to send messages between
-entities tracked by the game state.
+entities tracked by the game state. The Doorman-facing service
+(`idlerpg/services/idlerpg`) subscribes to a host — Doorman, or any
+`EventEmitter` — that emits `join`, `part`, `presence`, `user`, `channel`, and
+`message` events.
 
 For example, registrations use the `join` event:
 
 ```js
-game.fabric.emit('join', {
-  user: name,
-  channel: 'idlerpg'
+const EventEmitter = require('events');
+const IdleRPG = require('idlerpg/services/idlerpg');
+
+const host = new EventEmitter();
+const game = new IdleRPG();
+
+game.trust(host);
+host.emit('join', {
+  user: 'local/users/Yorick',
+  channel: 'local/channels/idlerpg'
 });
 ```
 

@@ -11,6 +11,13 @@ describe('Simulator', function () {
       [1, 2, 2, 5, 5, 10, 10, 20, 20, 50, 50, 100, 200, 1000, 2000]);
   });
 
+  it('ignores an empty range\'s null extremes when merging', function () {
+    const merged = [{ final: { max: null, min: null } }, { final: { max: 9, min: 4 } }, { final: { max: null, min: null } }]
+      .reduce((total, part) => Simulator.merge(total, part), {});
+    assert.deepStrictEqual(merged.final, { max: 9, min: 4 });
+    assert.deepStrictEqual(Simulator.merge({}, { final: { min: null } }).final, { min: null });
+  });
+
   it('merges metrics by summing, keeping extremes for max and min', function () {
     const merged = Simulator.merge(
       Simulator.merge({}, { players: 2, bands: { 1: { wins: 3 } }, final: { max: 9, min: 4 } }),

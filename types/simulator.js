@@ -86,9 +86,11 @@ function merge (target, source) {
     if (value && typeof value === 'object') {
       target[key] = merge(target[key] || {}, value);
     } else if (key === 'max') {
-      target[key] = target[key] == null ? value : Math.max(target[key], value);
+      if (value != null) target[key] = target[key] == null ? value : Math.max(target[key], value);
+      else if (!(key in target)) target[key] = null;
     } else if (key === 'min') {
-      target[key] = target[key] == null ? value : Math.min(target[key], value);
+      if (value != null) target[key] = target[key] == null ? value : Math.min(target[key], value);
+      else if (!(key in target)) target[key] = null;
     } else {
       target[key] = (target[key] || 0) + value;
     }

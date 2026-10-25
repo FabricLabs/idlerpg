@@ -66,9 +66,17 @@ function loadAccounts (accounts) {
   return list;
 }
 
+// A stackable item always carries a whole count of at least 1.
+function stackCount (stack) {
+  const count = Math.floor(Number(stack.count));
+  return Number.isFinite(count) && count > 0 ? count : 1;
+}
+
 function loadStack (stack, level) {
   const copy = Object.assign({}, stack);
-  if (copy.level == null && items.isGear(items.get(copy.id))) copy.level = level;
+  const def = items.get(copy.id);
+  if (copy.level == null && items.isGear(def)) copy.level = level;
+  if (def.stackable) copy.count = stackCount(copy);
   return copy;
 }
 
@@ -199,6 +207,7 @@ class Player {
     const def = items.get(stack.id);
     let equipped = null;
     let incoming = Object.assign({}, stack);
+    if (def.stackable) incoming.count = stackCount(incoming);
 
     if (items.canEquip(def, BODY)) {
       const current = this.equipment[def.slot];

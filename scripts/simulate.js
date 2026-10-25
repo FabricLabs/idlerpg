@@ -52,7 +52,11 @@ async function main () {
   const settings = settingsFrom(options);
   const simulator = new Simulator(settings);
   const players = simulator.settings.players;
-  const workers = Math.max(1, Math.min(players, Math.floor(options.workers || os.availableParallelism())));
+  if (options.workers != null && !(Number.isSafeInteger(options.workers) && options.workers > 0)) {
+    console.error('--workers must be a positive integer');
+    process.exit(1);
+  }
+  const workers = Math.max(1, Math.min(players, options.workers || os.availableParallelism()));
   const started = Date.now();
 
   const size = Math.ceil(players / workers);
