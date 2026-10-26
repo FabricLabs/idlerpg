@@ -86,14 +86,19 @@ For example, registrations use the `join` event:
 const EventEmitter = require('events');
 const IdleRPG = require('idlerpg/services/idlerpg');
 
-const host = new EventEmitter();
-const game = new IdleRPG();
+async function main () {
+  const host = new EventEmitter();
+  const game = new IdleRPG();
 
-game.trust(host);
-host.emit('join', {
-  user: 'local/users/Yorick',
-  channel: 'local/channels/idlerpg'
-});
+  game.trust(host);
+  await game.start();
+  host.emit('join', {
+    user: 'local/users/Yorick',
+    channel: 'local/channels/idlerpg'
+  });
+}
+
+main();
 ```
 
 ### Who is present
