@@ -44,8 +44,8 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#features/security",
-    "@fabric/rpg": "FabricLabs/rpg#feature/channels"
+    "@fabric/core": "FabricLabs/fabric#features/passport",
+    "@fabric/rpg": "FabricLabs/rpg#feature/passport"
   },
   "devDependencies": {
     "c8": "12.0.0",
