@@ -37,32 +37,36 @@ In the `examples` directory, you can find the following sample program:
 'use strict';
 
 const IdleRPG = require('idlerpg');
-const game = new IdleRPG({ interval: 1000 });
-const name = 'Yorick';
-const friend = 'Friend';
+const game = new IdleRPG({ interval: 2000, path: './stores/simple' });
+const user = 'local/users/Yorick';
+const channel = 'local/channels/idlerpg';
 
 async function main () {
-  game.on('patches', function (patches) {
-    game.fabric.applyPatches(patches);
-  });
+  game.on('tick', (tick) => console.log('tick:', tick));
+  game.on('message', (msg) => console.log('[MESSAGE]', msg.object));
 
-  game.on('message', function (msg) {
-    console.log('[MESSAGE]', msg);
-  });
+  await game.start();
 
-  game.on('ready', function () {
-    game.fabric.trust(game);
-    game.fabric.replay('log.json');
-  });
+  // Yorick walks into the game channel; every tick from now on rewards him.
+  await game._registerUser({ id: user, name: 'Yorick' });
+  await game._handleJoin({ user, channel });
 
-  return game.start();
+  // ...and leaves after a few ticks.
+  setTimeout(async () => {
+    await game._handlePart({ user, channel });
+    console.log('report:', game.report());
+    await game.stop();
+  }, 9000);
+
+  return game;
 }
 
 module.exports = main();
 ```
 
-This minimal program demonstrates the full IdleRPG loop using a "local" service,
-including composing a local copy of the in-game state (stored in `game.fabric`).
+This minimal program drives the engine directly, with no chat network: the
+game keeps its state in a Fabric Store at `path`, and `report()` returns the
+aggregate statistics.
 
 ### `idlerpg-bot`
 [`idlerpg-bot`][bot] is a [[`doorman`](https://github.com/FabricLabs/doorman)]-
@@ -71,25 +75,121 @@ operates, as well as how to integrate IdleRPG into your own applications.
 
 ## API
 IdleRPG uses [an event-driven API][fabric-events] to send messages between
-entities tracked by the game state.
+entities tracked by the game state. The Doorman-facing service
+(`idlerpg/services/idlerpg`) subscribes to a host — Doorman, or any
+`EventEmitter` — that emits `join`, `part`, `presence`, `user`, `channel`, and
+`message` events.
 
 For example, registrations use the `join` event:
 
 ```js
-game.fabric.emit('join', {
-  user: name,
-  channel: 'idlerpg'
-});
+const EventEmitter = require('events');
+const IdleRPG = require('idlerpg/services/idlerpg');
+
+async function main () {
+  const host = new EventEmitter();
+  const game = new IdleRPG();
+
+  game.trust(host);
+  await game.start();
+  host.emit('join', {
+    user: 'local/users/Yorick',
+    channel: 'local/channels/idlerpg'
+  });
+}
+
+main();
 ```
+
+### Who is present
+`sources` decides what makes a player present (and earn each tick):
+
+- `channel` — in an allowed channel, from `join` / `part` / `presence` events
+  that name one: voice channels on Discord, rooms on IRC or Matrix.
+- `status` — online with no channel: a `presence` event without one, or a
+  `user` marked `online`.
+- `text` — posting a message in an allowed channel, which keeps its author
+  present for `textWindowMs` (30 minutes) afterwards. For text-only
+  communities; such messages are never penalized.
+
+The default is `['channel', 'status']`. The Doorman Discord adapter marks
+anyone who posts as online, so a Discord game that should only pay voice
+presence sets `sources: ['channel']`.
+
+### Players and accounts
+Events name users by their chat account (`<service>/users/<id>`, e.g.
+`discord/users/<snowflake>`). Each player has an id of their own and a list of
+remote `accounts` (`{ service, id }`); the first account they appear on is
+attached when they are created, and `linkAccount(key, other)` attaches more —
+the same person on another network plays as one player, credited once per
+tick. `playerFor(key)` finds the player behind an account. The leaderboard
+and `profile(id)` use the player id — one id however many accounts a player
+links — and never show account ids. Saves from before accounts existed, which
+kept each player under their chat account, move to this shape on start with
+everything they tracked.
 
 For detailed documentation, see [the `docs` folder][docs].  Happy hacking!
 
+## The World
+IdleRPG's world comes from [`@fabric/rpg`][rpg]. The game ticks on its
+10-minute world clock. Each present player earns wealth and
+experience per tick, plus one attribute point per level (strength, dexterity,
+and constitution in turn). Now and then (`luck`, 5% per tick) they meet
+something: a creature from their channel's biome (its level drawn evenly
+around a center `levelOffset` of the player's level above it, default 10%,
+at most `levelOffsetMax` levels, default 15, across ± `levelRange`, default 2,
+or ± `levelSpread` of it, default 10%, whichever is wider; lair beasts three
+levels higher still), a piece of
+gear of about their level, a hidden cache, or a deity's blessing (weighted
+6, 2, 1, 1 by `encounterWeights`). Battles run automatically on the shared combat
+rules. A win pays kill experience, the creature's loot, and whatever it wore.
+The world holds 72 creatures, from sheep and goblins to griffins, wyverns,
+and liches; tougher ones (orcs, ogres, yetis, wyverns) appear only once a
+player reaches their `minLevel`. Better gear for one of a player's humanoid slots is equipped. Beast gear such
+as collars and barding goes to the bag, and a full bag sells its cheapest
+pieces. A loss costs 10% of wealth.
+Gear may drop with a prefix or a suffix (rare, announced in bold) or, very
+rarely, both (legendary); lair beasts guard hoards where these are likelier.
+Every game channel is a named place with a biome, and encounters are seeded by
+the world seed (`seed`, saved on first start), so a saved world replays the
+same way.
+
+There is no level cap: gear, creatures, and armor all scale with level, so
+fights stay winnable and short at any level while each level takes a little
+longer than the last. Reaching level `n + 1` takes `100 * n^1.65` experience
+(`LEVEL_BASE_EXPERIENCE`, `LEVEL_EXPONENT`), which puts level 100 about three
+months of continuous presence away. `perTickExperience` (10) and
+`experienceRate` (1, a multiplier on kill and blessing experience) tune the
+pace without moving anyone's level. Monsters run a little above the player
+because the slower pace leaves time to gather gear; without that lead, fights
+past level 20 would be won almost every time.
+
+## Simulating
+`npm run simulate` plays years of IdleRPG for many players at once — real
+`Player`s meeting real encounters, with the idle ticks between encounters
+skipped — across every CPU core. It prints win rate, fight length, gear, and
+pace per level band, plus the days taken to reach each milestone level:
+
+```
+npm run simulate -- --players 1000 --years 1
+npm run simulate -- --players 40 --years 10 --json
+```
+
+Options: `--players`, `--days` / `--years` / `--ticks`, `--seed`, `--luck`,
+`--level-range`, `--level-spread`, `--level-offset`, `--level-offset-max`,
+`--per-tick-experience`, `--experience-rate`, `--channels`, `--workers`,
+`--json`. Results
+depend only on the options, never on how players are split across workers.
+`types/simulator.js` is the same engine as a library.
+
+To develop against a local `@fabric/rpg` checkout at `../rpg`, run
+`npm run link:rpg` (or set `FABRIC_RPG` to another path).
+
 ## Next Steps
-IdleRPG is an experiment in _swarm computing_, as part of an effort by [the
-Verse team][verse-team] to [create a serverless web][fabric].  Game engines are
-complex programs, but we're starting with our own ("`verse`") as a demonstration
-of how a distributed computer &amp; accompanying operating system might replace
-the need for servers altogether.
+IdleRPG is an experiment in _swarm computing_, as part of an effort to [create
+a serverless web][fabric].  Game engines are complex programs, and this one is
+a demonstration of how a distributed computer &amp; accompanying operating
+system might replace the need for servers altogether.
 
 If this is an idea you're interested in, come join [the Fabric
 community][fabric-community]!
@@ -98,9 +198,9 @@ community][fabric-community]!
 [chat]: https://to.fabric.pub/#idlerpg:roleplaygateway.com
 [doorman]: https://github.com/FabricLabs/doorman
 [fabric-events]: https://dev.fabric.pub/docs
-[verse-team]: https://roleplaygateway.com/people
 [docs]: docs
 [fork-idlerpg]: https://github.com/FabricLabs/idlerpg#fork-destination-box
 [fork-idlerpg-bot]: https://github.com/FabricLabs/idlerpg-bot#fork-destination-box
 [fabric]: https://fabric.fm
 [fabric-community]: https://fabric.pub
+[rpg]: https://github.com/FabricLabs/rpg

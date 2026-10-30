@@ -1,13 +1,28 @@
 {
   "name": "idlerpg",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Generalized implementation of IdleRPG, a game which rewards participants for remaining idle.",
   "main": "types/idlerpg.js",
+  "exports": {
+    ".": "./types/idlerpg.js",
+    "./types/*": "./types/*.js",
+    "./services/*": "./services/*.js",
+    "./constants": "./constants.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "26.12.1",
+    "npm": ">=12"
+  },
   "scripts": {
-    "coverage": "istanbul cover _mocha tests -- --exit",
-    "docs": "npm run make:docs && ecstatic docs/",
+    "coverage": "c8 npm test",
+    "docs": "npm run make:docs && http-server docs -p 8000",
+    "link:fabric": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_CORE||path.resolve(__dirname,'../fabric-clean');const dest=path.join('node_modules','@fabric','core');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/core ->',target)\"",
+    "link:rpg": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_RPG||path.resolve(__dirname,'../rpg');const dest=path.join('node_modules','@fabric','rpg');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/rpg ->',target)\"",
     "make:docs": "jsdoc types README.md -c jsdoc.json -d docs",
-    "review:coverage": "npm run coverage && ecstatic coverage/lcov-report",
+    "report:install": "rm -rf node_modules && mkdir -p reports && rm -f package-lock.json && echo \"$ npm i --allow-git=all\" > reports/install.log && npm i --allow-git=all >> reports/install.log 2>&1",
+    "review:coverage": "c8 --reporter=lcov npm test && http-server coverage/lcov-report -p 8000",
+    "simulate": "node scripts/simulate.js",
     "start": "node scripts/idlerpg.js",
     "test": "mocha tests --exit"
   },
@@ -29,21 +44,13 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "fabriclabs/fabric#pruning",
-    "@fabric/http": "FabricLabs/web#fabric-0.1.0",
-    "@fabric/rpg": "FabricLabs/rpg#modernize",
-    "fast-json-patch": "^2.0.6",
-    "indefinite-article": "0.0.2",
-    "json-pointer": "^0.6.0",
-    "level": "^3.0.2",
-    "mkdirpsync": "^0.1.0",
-    "node-schedule": "^1.3.0"
+    "@fabric/core": "FabricLabs/fabric#features/passport",
+    "@fabric/rpg": "FabricLabs/rpg#feature/passport"
   },
   "devDependencies": {
-    "ecstatic": "^4.1.1",
-    "istanbul": "^1.1.0-alpha.1",
-    "jsdoc": "FabricLabs/jsdoc#fabric",
-    "mocha": "^5.1.0",
-    "semistandard": "^13.0.1"
+    "c8": "12.0.0",
+    "http-server": "14.1.1",
+    "jsdoc": "4.0.5",
+    "mocha": "12.0.3"
   }
 }

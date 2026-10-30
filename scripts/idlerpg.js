@@ -1,13 +1,33 @@
 #!/usr/bin/env node
 'use strict';
 
-const Core = require('../types/core');
+// Standalone IdleRPG: runs the engine with no chat host attached. Useful for
+// inspecting persisted state or replaying `data/*.json` event logs.
+const fs = require('fs');
+const path = require('path');
+const IdleRPG = require('../types/idlerpg');
 
-async function main () {
-  let core = new Core();
-  let process = await core.start();
-  console.log('[IDLERPG]', 'process:', process);
-  console.log('[IDLERPG]', 'Core is now running!');
+function loadSettings () {
+  const file = path.resolve(__dirname, '../settings/local.js');
+  if (fs.existsSync(file)) return require(file);
+  return {};
 }
 
-module.exports = main();
+async function main (settings = {}) {
+  const rpg = new IdleRPG(settings);
+  rpg.on('message', (message) => console.log('[IDLERPG:MESSAGE]', message.target, message.object));
+  rpg.on('error', (error) => console.error('[IDLERPG:ERROR]', error));
+  rpg.on('tick', (tick) => console.log('[IDLERPG:TICK]', tick));
+  await rpg.start();
+  console.log('[IDLERPG]', 'started:', rpg.report());
+  return rpg;
+}
+
+if (require.main === module) {
+  main(loadSettings()).catch((error) => {
+    console.error('[IDLERPG]', 'fatal:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = main;
