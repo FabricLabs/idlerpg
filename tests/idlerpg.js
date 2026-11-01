@@ -461,6 +461,25 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('keeps the highest-ranked name and still accepts a rename at that rank', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'Neo @ TRDE', rank: 20 });
+    await rpg._registerUser({ id: 'discord/users/1', name: '[G00N] Neorion', rank: 40 });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    const player = rpg.playerFor('discord/users/1');
+    assert.strictEqual(player.name, '[G00N] Neorion');
+    assert.strictEqual(player.nameRank, 40);
+    await rpg._registerUser({ id: 'discord/users/1', name: '[G00N] Neo', rank: 40 });
+    const row = rpg.leaderboard()[0];
+    assert.strictEqual(row.name, '[G00N] Neo');
+    assert.ok(!('nameRank' in row), 'the leaderboard does not publish the rank');
+    assert.strictEqual(new Player(rpg.playerFor('discord/users/1')).toObject().nameRank, 40);
+    await rpg.stop();
+  });
+
   it('credits a player present on several accounts once', async function () {
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
     await rpg.start();

@@ -44,7 +44,7 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#features/passport",
+    "@fabric/core": "FabricLabs/fabric#feature/passport",
     "@fabric/rpg": "FabricLabs/rpg#feature/passport"
   },
   "devDependencies": {
@@ -52,5 +52,12 @@
     "http-server": "14.1.1",
     "jsdoc": "4.0.5",
     "mocha": "12.0.3"
+  },
+  "overrides": {
+    "glob@>=9.0.0 <14.0.2": "=14.0.3",
+    "minimatch@>=9.0.0 <11.0.1": "=11.0.3",
+    "page": {
+      "path-to-regexp": "=1.9.0"
+    }
   }
 }

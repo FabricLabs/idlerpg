@@ -389,7 +389,7 @@ class IdleRPG extends Service {
 
     // A player present on several accounts is credited once.
     for (const user of this._presentUsers()) {
-      const player = this._player(user.id, user.name);
+      const player = this._player(user.id, user.name, user.nameRank);
       if (credited.has(player.id)) continue;
       credited.add(player.id);
       const record = new Player(player);
@@ -518,18 +518,40 @@ class IdleRPG extends Service {
     });
   }
 
-  _user (id, name) {
+  /**
+   * Keep `name` when it is at least as authoritative as the one stored.
+   * A missing rank counts as 0, the same as a bare username, so callers
+   * that don't rank names still rename, and a home-server name (a higher
+   * rank) is not covered by one that arrives later.
+   * @param {Object} record User or player record.
+   * @param {string} name
+   * @param {number} [rank]
+   * @returns {boolean} Whether the stored name changed.
+   */
+  _keepName (record, name, rank) {
+    const known = name && name !== record.id ? String(name).trim() : '';
+    if (!known) return false;
+    const next = Number.isFinite(Number(rank)) ? Number(rank) : 0;
+    const has = record.name && record.name !== record.id;
+    const current = Number.isFinite(Number(record.nameRank)) ? Number(record.nameRank) : (has ? 0 : -1);
+    if (next < current) return false;
+    if (record.name === known && record.nameRank === next) return false;
+    record.name = known;
+    record.nameRank = next;
+    return true;
+  }
+
+  _user (id, name, rank) {
     const users = this.content.users;
     if (!users[id]) {
-      users[id] = { id, name: name || id, presence: 'offline', channels: {}, since: null };
-    } else if (name && users[id].name !== name) {
-      users[id].name = name;
-    }
-    const player = this._playerOf(id);
-    if (name && name !== id && player && player.name !== name) {
-      player.name = name;
+      const known = name && name !== id ? String(name).trim() : '';
+      users[id] = { id, name: known || id, presence: 'offline', channels: {}, since: null };
+      if (known) users[id].nameRank = Number.isFinite(Number(rank)) ? Number(rank) : 0;
+    } else if (this._keepName(users[id], name, rank)) {
       this._dirty = true;
     }
+    const player = this._playerOf(id);
+    if (player && this._keepName(player, name, rank)) this._dirty = true;
     return users[id];
   }
 
@@ -573,17 +595,17 @@ class IdleRPG extends Service {
    * @param {string} [name] Display name; ignored when it is just the id.
    * @returns {Object} Stored player record.
    */
-  _player (key, name) {
+  _player (key, name, rank) {
     const known = name && name !== key ? name : null;
     let player = this._playerOf(key);
     if (!player) {
       const id = this._newPlayerId();
-      player = new Player({ id, name: known, accounts: [accountOf(key)], firstSeen: new Date(this.now).toISOString() }).toObject();
+      const nameRank = known ? (Number.isFinite(Number(rank)) ? Number(rank) : 0) : -1;
+      player = new Player({ id, name: known, nameRank, accounts: [accountOf(key)], firstSeen: new Date(this.now).toISOString() }).toObject();
       this.content.players[id] = player;
       this._accounts[key] = id;
       this._dirty = true;
-    } else if (known && player.name !== known) {
-      player.name = known;
+    } else if (this._keepName(player, known, rank)) {
       this._dirty = true;
     }
     return player;
@@ -636,18 +658,19 @@ class IdleRPG extends Service {
     }
     if (!wasPresent) {
       user.since = this.now;
-      const player = this._player(user.id, user.name);
+      const player = this._player(user.id, user.name, user.nameRank);
       if (!player.ticks) await this._welcomePlayer(player);
     }
     return user;
   }
 
   /**
-   * @param {Object} user `{ id, name?, online? }`
+   * @param {Object} user `{ id, name?, rank?, online? }` `rank` is how
+   *   authoritative `name` is; a lower rank never covers a higher one.
    */
   async _registerUser (user) {
     if (!user || !user.id) return null;
-    const record = this._user(user.id, user.name);
+    const record = this._user(user.id, user.name, user.rank);
     if (user.online === true || user.presence === 'online') await this._handlePresence({ user: user.id, status: 'online' });
     this._dirty = true;
     return record;
