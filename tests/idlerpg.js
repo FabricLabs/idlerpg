@@ -480,6 +480,20 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('never takes the account id for a player name', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'discord/users/1', rank: 40 });
+    await rpg._registerUser({ id: 'discord/users/1', name: ' discord/users/1 ', rank: 40 });
+    const player = rpg.playerFor('discord/users/1');
+    assert.strictEqual(player.name, 'neorion');
+    assert.strictEqual(player.nameRank, 0);
+    assert.strictEqual(rpg.leaderboard()[0].name, 'neorion');
+    await rpg.stop();
+  });
+
   it('credits a player present on several accounts once', async function () {
     const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
     await rpg.start();

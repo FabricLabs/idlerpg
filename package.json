@@ -15,7 +15,7 @@
     "npm": ">=12"
   },
   "scripts": {
-    "coverage": "c8 npm test",
+    "coverage": "c8 --reporter=text --reporter=lcov npm test",
     "docs": "npm run make:docs && http-server docs -p 8000",
     "link:fabric": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_CORE||path.resolve(__dirname,'../fabric-clean');const dest=path.join('node_modules','@fabric','core');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/core ->',target)\"",
     "link:rpg": "node -e \"const fs=require('fs'),path=require('path');const target=process.env.FABRIC_RPG||path.resolve(__dirname,'../rpg');const dest=path.join('node_modules','@fabric','rpg');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.rmSync(dest,{recursive:true,force:true});fs.symlinkSync(target,dest,'dir');console.log('linked @fabric/rpg ->',target)\"",

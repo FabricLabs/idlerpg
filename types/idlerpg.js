@@ -542,6 +542,7 @@ class IdleRPG extends Service {
   }
 
   _user (id, name, rank) {
+    if (name != null && String(name).trim() === id) name = null;
     const users = this.content.users;
     if (!users[id]) {
       const known = name && name !== id ? String(name).trim() : '';
