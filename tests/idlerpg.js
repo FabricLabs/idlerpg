@@ -324,6 +324,58 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('moves nothing and says so when the transfer cannot be saved', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+    await rpg._registerUser({ id: 'local/users/b', name: 'b', online: true });
+    await rpg.tick();
+    const errors = [];
+    rpg.on('error', (error) => errors.push(error));
+    rpg.store = { db: {}, set: async () => { throw new Error('/idlerpg is larger than 2097152 characters of JSON'); } };
+    const whispers = [];
+    rpg.on('whisper', (w) => whispers.push(w));
+    const reply = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 5 b', target: 'local/channels/x' });
+    assert.match(reply, /could not be saved/);
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth, 10);
+    assert.strictEqual(rpg.playerFor('local/users/b').wealth, 10);
+    assert.deepStrictEqual(whispers, []);
+    assert.strictEqual(rpg._dirty, true, 'still unsaved');
+    assert.match(String(errors[0]), /persist: .*larger than/);
+    rpg.store = null;
+    await rpg.stop();
+  });
+
+  it('builds a strict Store and will not start empty when the save cannot be read', async function () {
+    const dir = tmpStore();
+    const rpg = new IdleRPG({ path: dir, autostart: false, verbosity: 0 });
+    assert.strictEqual(rpg.store.settings.strict, true);
+    rpg.store.get = async () => { throw new Error('IO error'); };
+    await assert.rejects(() => rpg.start(), /IO error/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps every day but lists its players only for the last 30', async function () {
+    const DAY = 24 * 60 * 60 * 1000;
+    for (const [playerListDays, listed] of [[undefined, 30], [7, 30], [45, 45], [0, 60]]) {
+      const time = clock();
+      const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, now: time.now, playerListDays, verbosity: 0 });
+      await rpg.start();
+      await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+      for (let i = 0; i < 60; i++) { await rpg.tick(); time.advance(DAY); }
+      time.advance(-DAY);
+      const days = Object.values(rpg.content.stats.days);
+      assert.strictEqual(days.length, 60, String(playerListDays));
+      assert.strictEqual(days.filter((bucket) => bucket.players).length, listed, String(playerListDays));
+      assert.ok(days.every((bucket) => bucket.players || bucket.playerCount === 1));
+      const report = rpg.report();
+      assert.strictEqual(report.last30Days.players, 1);
+      assert.strictEqual(report.history.length, 30);
+      assert.ok(report.history.every((day) => day.players === 1));
+      await rpg.stop();
+    }
+  });
+
   it('ticks on the shared @fabric/rpg world clock', function () {
     const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });
     assert.strictEqual(rpg.settings.tickMs, TICK_INTERVAL);

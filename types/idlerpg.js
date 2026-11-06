@@ -35,6 +35,7 @@ const {
   LEVEL_OFFSET_MAX,
   PRESENCE_SOURCES,
   RETENTION_DAYS,
+  PLAYER_LIST_DAYS,
   TEXT_PRESENCE_MS
 } = require('../constants');
 
@@ -44,6 +45,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const TOP_CREATURES = 5;
 const PLAYER_ID_BYTES = 8;
+const REPORT_DAYS = 30;
 
 /**
  * The remote account behind a namespaced user id: `<service>/users/<id>`
@@ -150,6 +152,9 @@ class IdleRPG extends Service {
    *   announcement channels, or in a game channel when there are none.
    * @param {boolean} [settings.autostart=true] Run the tick clock on `start()`.
    * @param {number} [settings.retentionDays=0] Day buckets kept (0 = keep all history).
+   * @param {number} [settings.playerListDays=30] Days a bucket keeps which players it
+   *   counted (at least 30, which reports read); older buckets keep `playerCount`
+   *   only, so the save stops growing by a list per day (0 = keep every list).
    * @param {Function} [settings.now] Clock (tests).
    */
   constructor (settings = {}) {
@@ -158,6 +163,8 @@ class IdleRPG extends Service {
       name: 'idlerpg',
       path: 'stores/idlerpg',
       persistent: true,
+      // A failed Level read or write rejects instead of passing for an empty game or a save.
+      strict: true,
       networking: false
     }, rest));
 
@@ -179,6 +186,7 @@ class IdleRPG extends Service {
       penalties: true,
       autostart: true,
       retentionDays: RETENTION_DAYS,
+      playerListDays: PLAYER_LIST_DAYS,
       now: () => Date.now()
     }, this.settings, rest, {
       tickMs: Number(tickMs != null ? tickMs : (interval != null ? interval : TICK_INTERVAL))
@@ -245,8 +253,8 @@ class IdleRPG extends Service {
 
   async _restore () {
     if (!this.store) return;
-    let prior = null;
-    try { prior = await this.store.get(STORE_KEY); } catch (_) { prior = null; }
+    // A failed read must not start an empty game: the next save would overwrite the real one.
+    let prior = await this.store.get(STORE_KEY);
     if (typeof prior === 'string') {
       try { prior = JSON.parse(prior); } catch (_) { prior = null; }
     }
@@ -268,13 +276,20 @@ class IdleRPG extends Service {
     }
   }
 
+  /**
+   * Save the game. A failed save emits `error` and leaves the game unsaved.
+   * @returns {Promise<boolean>} Whether the Store now holds the current state.
+   */
   async _persist () {
-    if (!this.store || !this.store.db) return;
+    if (!this.store || !this.store.db) return true;
     this._dirty = false;
     try {
       await this.store.set(STORE_KEY, this.content);
+      return true;
     } catch (error) {
+      this._dirty = true;
       this.emit('error', `[IDLERPG] persist: ${error && error.message ? error.message : error}`);
+      return false;
     }
   }
 
@@ -317,6 +332,7 @@ class IdleRPG extends Service {
     }
     if (!legacy.length) return;
     for (const bucket of Object.values(content.stats.days || {})) {
+      if (!bucket || !bucket.players) continue;
       const counted = {};
       for (const key of Object.keys(bucket.players || {})) counted[this._accounts[key] || key] = 1;
       bucket.players = counted;
@@ -422,11 +438,21 @@ class IdleRPG extends Service {
   }
 
   _pruneDays (now) {
+    const days = this.content.stats.days;
     const retentionDays = Number(this.settings.retentionDays);
-    if (!(retentionDays > 0)) return;
-    const oldest = dayKey(now - (retentionDays - 1) * DAY_MS);
-    for (const key of Object.keys(this.content.stats.days)) {
-      if (key < oldest) delete this.content.stats.days[key];
+    if (retentionDays > 0) {
+      const oldest = dayKey(now - (retentionDays - 1) * DAY_MS);
+      for (const key of Object.keys(days)) {
+        if (key < oldest) delete days[key];
+      }
+    }
+    const listDays = this.settings.playerListDays == null ? PLAYER_LIST_DAYS : Number(this.settings.playerListDays);
+    if (!(listDays > 0)) return;
+    const listed = dayKey(now - (Math.max(listDays, REPORT_DAYS) - 1) * DAY_MS);
+    for (const [key, bucket] of Object.entries(days)) {
+      if (key >= listed || !bucket || !bucket.players) continue;
+      bucket.playerCount = Object.keys(bucket.players).length;
+      delete bucket.players;
     }
   }
 
@@ -833,7 +859,7 @@ class IdleRPG extends Service {
         if (!bucket) continue;
         presentMs += bucket.presentMs;
         peak = Math.max(peak, bucket.peak);
-        for (const id of Object.keys(bucket.players)) players.add(id);
+        for (const id of Object.keys(bucket.players || {})) players.add(id);
       }
       return { hours: round1(presentMs / HOUR_MS), players: players.size, peak };
     };
@@ -861,14 +887,15 @@ class IdleRPG extends Service {
       lastTick: stats.lastTick,
       startedAt: stats.startedAt,
       last7Days: window(7),
-      last30Days: window(30),
+      last30Days: window(REPORT_DAYS),
       battles: { won: battles.won, lost: battles.lost, total: battles.won + battles.lost },
       kills: battles.won,
       slain,
       levels,
-      history: windowDays(now, 30).reverse().map((day) => {
+      history: windowDays(now, REPORT_DAYS).reverse().map((day) => {
         const bucket = stats.days[day] || { presentMs: 0, peak: 0, players: {} };
-        return { day, hours: round1(bucket.presentMs / HOUR_MS), players: Object.keys(bucket.players).length, peak: bucket.peak };
+        const players = bucket.players ? Object.keys(bucket.players).length : (bucket.playerCount || 0);
+        return { day, hours: round1(bucket.presentMs / HOUR_MS), players, peak: bucket.peak };
       })
     };
   }
@@ -1022,7 +1049,12 @@ class IdleRPG extends Service {
     actor.wealth -= amount;
     target.wealth += amount;
     this._dirty = true;
-    await this._persist();
+    if (!(await this._persist())) {
+      // By difference: a tick may have paid either player while the save was pending.
+      actor.wealth += amount;
+      target.wealth -= amount;
+      return `The transfer could not be saved, so nothing was moved.  Try again later.`;
+    }
 
     // Whisper on the network the transfer came from when the target is there.
     const account = target.accounts.find((entry) => entry.service === service) || target.accounts[0];

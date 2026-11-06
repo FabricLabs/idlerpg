@@ -66,7 +66,11 @@ module.exports = main();
 
 This minimal program drives the engine directly, with no chat network: the
 game keeps its state in a Fabric Store at `path`, and `report()` returns the
-aggregate statistics.
+aggregate statistics. The Store is strict: a save that cannot be read stops
+`start()` rather than starting an empty game, and a failed save is an `error`
+event (a `!transfer` that cannot be saved moves nothing). Day buckets are kept
+forever unless `retentionDays` is set; after `playerListDays` (30) a bucket
+keeps how many players it counted instead of which.
 
 ### `idlerpg-bot`
 [`idlerpg-bot`][bot] is a [[`doorman`](https://github.com/FabricLabs/doorman)]-
