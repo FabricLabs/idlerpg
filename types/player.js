@@ -99,6 +99,9 @@ class Player {
   constructor (record = {}) {
     this.id = record.id;
     this.name = record.name || null;
+    // Missing on older saves: a name already stored counts as the lowest
+    // rank, so a home-server name can replace it and a username cannot.
+    this.nameRank = Number.isFinite(Number(record.nameRank)) ? Number(record.nameRank) : (this.name ? 0 : -1);
     this.accounts = loadAccounts(record.accounts);
     this.experience = Number(record.experience) || 0;
     this.wealth = Number(record.wealth) || 0;
@@ -310,6 +313,7 @@ class Player {
     return {
       id: this.id,
       name: this.name,
+      nameRank: this.nameRank,
       accounts: this.accounts.map((account) => Object.assign({}, account)),
       experience: this.experience,
       wealth: this.wealth,
