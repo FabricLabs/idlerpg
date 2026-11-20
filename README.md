@@ -44,6 +44,7 @@ const channel = 'local/channels/idlerpg';
 async function main () {
   game.on('tick', (tick) => console.log('tick:', tick));
   game.on('message', (msg) => console.log('[MESSAGE]', msg.object));
+  game.on('error', (error) => console.error('[ERROR]', error));
 
   await game.start();
 
@@ -66,7 +67,14 @@ module.exports = main();
 
 This minimal program drives the engine directly, with no chat network: the
 game keeps its state in a Fabric Store at `path`, and `report()` returns the
-aggregate statistics.
+aggregate statistics. The Store is strict: a save that cannot be read, or
+that is not a game, stops `start()` rather than starting an empty game. A
+failed save is an `error` event when you listen for one (as above), else a
+`debug` event; either way the game keeps running unsaved, and a `!transfer`
+that cannot be saved moves nothing. Day buckets are kept for `retentionDays`
+(400; 0 keeps every day). After `playerListDays` (30, and never fewer, since
+reports read 30 days) a bucket keeps how many players it counted instead of
+which; 0 keeps every list.
 
 ### `idlerpg-bot`
 [`idlerpg-bot`][bot] is a [[`doorman`](https://github.com/FabricLabs/doorman)]-

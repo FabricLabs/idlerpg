@@ -1,0 +1,41 @@
+name: Test
+on:
+  pull_request:
+    branches:
+    - '**'
+  push:
+    branches:
+    - master
+permissions:
+  contents: read
+jobs:
+  test:
+    name: Run tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+        - macos-latest
+        - ubuntu-latest
+    steps:
+    - name: Checkout branch
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    - name: Install Node.js on ${{ matrix.os }}
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: '.nvmrc'
+    # package.json requires npm 12 (default-deny install scripts);
+    # the Node.js release in .nvmrc bundles npm 11.
+    - name: Install npm 12
+      run: npm install -g npm@12.2.1
+    # package-lock.json resolves the Fabric git dependencies over SSH.
+    - name: Fetch GitHub dependencies over HTTPS
+      run: |
+        git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+        git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+    - name: Install dependencies
+      run: npm ci
+    - name: Run tests
+      run: npm test

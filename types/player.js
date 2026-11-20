@@ -18,6 +18,13 @@ const {
 // Each level grants one attribute point, in this order.
 const GROWTH = ['strength', 'dexterity', 'constitution'];
 
+// A count from a save: finite and within safe integers, or a crafted save could hang the level loop.
+function count (value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-Number.MAX_SAFE_INTEGER, Math.min(Number.MAX_SAFE_INTEGER, n));
+}
+
 // Players wear the humanoid kit; beast gear such as collars goes to the bag.
 const BODY = 'humanoid';
 
@@ -99,12 +106,15 @@ class Player {
   constructor (record = {}) {
     this.id = record.id;
     this.name = record.name || null;
+    // Missing on older saves: a name already stored counts as the lowest
+    // rank, so a home-server name can replace it and a username cannot.
+    this.nameRank = Number.isFinite(Number(record.nameRank)) ? Number(record.nameRank) : (this.name ? 0 : -1);
     this.accounts = loadAccounts(record.accounts);
-    this.experience = Number(record.experience) || 0;
-    this.wealth = Number(record.wealth) || 0;
-    this.presenceMs = Number(record.presenceMs) || 0;
-    this.ticks = Number(record.ticks) || 0;
-    this.cooldown = Number(record.cooldown) || 0;
+    this.experience = Math.max(0, count(record.experience));
+    this.wealth = count(record.wealth);
+    this.presenceMs = Math.max(0, count(record.presenceMs));
+    this.ticks = Math.max(0, count(record.ticks));
+    this.cooldown = count(record.cooldown);
     this.attributes = attributes.normalize(record.attributes);
     this.allocated = record.attributes ? Math.max(1, Number(record.allocated) || 1) : 1;
     const level = this.level;
@@ -310,6 +320,7 @@ class Player {
     return {
       id: this.id,
       name: this.name,
+      nameRank: this.nameRank,
       accounts: this.accounts.map((account) => Object.assign({}, account)),
       experience: this.experience,
       wealth: this.wealth,

@@ -191,14 +191,14 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
-  it('retains all daily history by default and prunes only when retentionDays is set', async function () {
+  it('keeps 400 days of history by default, every day with retentionDays 0', async function () {
     const DAY = 24 * 60 * 60 * 1000;
-    for (const [retentionDays, expected] of [[undefined, 400], [30, 30]]) {
+    for (const [retentionDays, expected] of [[undefined, 400], [30, 30], [0, 420]]) {
       const time = clock();
       const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, now: time.now, retentionDays, verbosity: 0 });
       await rpg.start();
       await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
-      for (let i = 0; i < 400; i++) { await rpg.tick(); time.advance(DAY); }
+      for (let i = 0; i < 420; i++) { await rpg.tick(); time.advance(DAY); }
       assert.strictEqual(Object.keys(rpg.content.stats.days).length, expected);
       await rpg.stop();
     }
@@ -322,6 +322,129 @@ describe('IdleRPG', function () {
     assert.strictEqual(rpg.playerFor('local/users/b').wealth, 15);
     assert.strictEqual(whispers[0].target, 'local/users/b');
     await rpg.stop();
+  });
+
+  it('moves nothing and says so when the transfer cannot be saved', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+    await rpg._registerUser({ id: 'local/users/b', name: 'b', online: true });
+    await rpg.tick();
+    const errors = [];
+    rpg.on('error', (error) => errors.push(error));
+    rpg.store = { db: {}, set: async () => { throw new Error('/idlerpg is larger than 2097152 characters of JSON'); } };
+    const whispers = [];
+    rpg.on('whisper', (w) => whispers.push(w));
+    const reply = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 5 b', target: 'local/channels/x' });
+    assert.match(reply, /could not be saved/);
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth, 10);
+    assert.strictEqual(rpg.playerFor('local/users/b').wealth, 10);
+    assert.deepStrictEqual(whispers, []);
+    assert.strictEqual(rpg._dirty, true, 'still unsaved');
+    assert.match(String(errors[0]), /persist: .*larger than/);
+    rpg.store = null;
+    await rpg.stop();
+  });
+
+  it('keeps a failed save from crashing the host or moving a transfer when nobody listens for errors', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+    await rpg._registerUser({ id: 'local/users/b', name: 'b', online: true });
+    await rpg.tick();
+    const debug = [];
+    rpg.on('debug', (message) => debug.push(message));
+    rpg.store = { db: {}, set: async () => { throw new Error('disk full'); } };
+    await rpg.tick();
+    const reply = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 5 b', target: 'local/channels/x' });
+    assert.match(reply, /could not be saved/);
+    assert.strictEqual(rpg.playerFor('local/users/a').wealth + rpg.playerFor('local/users/b').wealth, rpg.playerFor('local/users/a').wealth * 2);
+    assert.ok(debug.some((message) => /persist: disk full/.test(message)));
+    rpg.store = null;
+    await rpg.stop();
+  });
+
+  it('never echoes a transfer target and refuses a name two players share', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+    await rpg._registerUser({ id: 'local/users/b', name: 'twin', online: true });
+    await rpg._registerUser({ id: 'local/users/c', name: 'twin', online: true });
+    await rpg.tick();
+    const nobody = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 1 @everyone', target: 'local/channels/x' });
+    assert.strictEqual(nobody, `Couldn't find that player.`);
+    const twin = await rpg._handleTransferRequest({ actor: 'local/users/a', object: '!transfer 1 twin', target: 'local/channels/x' });
+    assert.strictEqual(twin, 'More than one player has that name.');
+    await rpg.stop();
+  });
+
+  it('posts names that cannot ping anyone', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, announcements: ['local/channels/news'], verbosity: 0 });
+    const posted = [];
+    rpg.on('message', (message) => posted.push(message.object));
+    await rpg.start();
+    await rpg._registerUser({ id: 'local/users/a', name: '@everyone <@&1>', online: true });
+    await rpg.tick();
+    assert.ok(posted.length > 0);
+    for (const text of posted) {
+      assert.ok(!text.includes('@everyone'), text);
+      assert.ok(!text.includes('<@&'), text);
+    }
+    assert.strictEqual(rpg.leaderboard()[0].name, '@everyone <@&1>');
+    await rpg.stop();
+  });
+
+  it('keeps no record of someone present only where the game does not count', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, channels: ['idlerpg'], verbosity: 0 });
+    await rpg.start();
+    await rpg._handleJoin({ user: 'local/users/a', channel: 'local/channels/general' });
+    await rpg._handlePart({ user: 'local/users/z', channel: 'local/channels/general' });
+    assert.deepStrictEqual(Object.keys(rpg.content.users), []);
+    await rpg.stop();
+  });
+
+  it('will not start when day buckets are not a map', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });
+    rpg.store = { db: {}, get: async () => ({ stats: { days: 5 } }), set: async () => {} };
+    await assert.rejects(() => rpg.start(), /stats\.days/);
+  });
+
+  it('will not start from a save that is not a game', async function () {
+    for (const prior of ['{not json', '[1,2]', JSON.stringify({ users: [] })]) {
+      const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });
+      rpg.store = { db: {}, get: async () => prior, set: async () => {} };
+      await assert.rejects(() => rpg.start(), /\[IDLERPG\] the save/);
+    }
+  });
+
+  it('builds a strict Store and will not start empty when the save cannot be read', async function () {
+    const dir = tmpStore();
+    const rpg = new IdleRPG({ path: dir, autostart: false, verbosity: 0 });
+    assert.strictEqual(rpg.store.settings.strict, true);
+    rpg.store.get = async () => { throw new Error('IO error'); };
+    await assert.rejects(() => rpg.start(), /IO error/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps every day but lists its players only for the last 30', async function () {
+    const DAY = 24 * 60 * 60 * 1000;
+    for (const [playerListDays, listed] of [[undefined, 30], [7, 30], [45, 45], [0, 60]]) {
+      const time = clock();
+      const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, now: time.now, playerListDays, verbosity: 0 });
+      await rpg.start();
+      await rpg._registerUser({ id: 'local/users/a', name: 'a', online: true });
+      for (let i = 0; i < 60; i++) { await rpg.tick(); time.advance(DAY); }
+      time.advance(-DAY);
+      const days = Object.values(rpg.content.stats.days);
+      assert.strictEqual(days.length, 60, String(playerListDays));
+      assert.strictEqual(days.filter((bucket) => bucket.players).length, listed, String(playerListDays));
+      assert.ok(days.every((bucket) => bucket.players || bucket.playerCount === 1));
+      const report = rpg.report();
+      assert.strictEqual(report.last30Days.players, 1);
+      assert.strictEqual(report.history.length, 30);
+      assert.ok(report.history.every((day) => day.players === 1));
+      await rpg.stop();
+    }
   });
 
   it('ticks on the shared @fabric/rpg world clock', function () {
@@ -458,6 +581,39 @@ describe('IdleRPG', function () {
     assert.strictEqual(rpg.profile('discord/users/2'), null, 'chat accounts do not find pages');
     assert.strictEqual(rpg.profile('2'), null);
     assert.strictEqual(rpg.profile(''), null);
+    await rpg.stop();
+  });
+
+  it('keeps the highest-ranked name and still accepts a rename at that rank', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'Neo @ TRDE', rank: 20 });
+    await rpg._registerUser({ id: 'discord/users/1', name: '[G00N] Neorion', rank: 40 });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    const player = rpg.playerFor('discord/users/1');
+    assert.strictEqual(player.name, '[G00N] Neorion');
+    assert.strictEqual(player.nameRank, 40);
+    await rpg._registerUser({ id: 'discord/users/1', name: '[G00N] Neo', rank: 40 });
+    const row = rpg.leaderboard()[0];
+    assert.strictEqual(row.name, '[G00N] Neo');
+    assert.ok(!('nameRank' in row), 'the leaderboard does not publish the rank');
+    assert.strictEqual(new Player(rpg.playerFor('discord/users/1')).toObject().nameRank, 40);
+    await rpg.stop();
+  });
+
+  it('never takes the account id for a player name', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, luck: 0, verbosity: 0 });
+    await rpg.start();
+    await rpg._registerUser({ id: 'discord/users/1', name: 'neorion', rank: 0 });
+    await rpg._handleJoin({ user: 'discord/users/1', channel: 'discord/channels/c1' });
+    await rpg._registerUser({ id: 'discord/users/1', name: 'discord/users/1', rank: 40 });
+    await rpg._registerUser({ id: 'discord/users/1', name: ' discord/users/1 ', rank: 40 });
+    const player = rpg.playerFor('discord/users/1');
+    assert.strictEqual(player.name, 'neorion');
+    assert.strictEqual(player.nameRank, 0);
+    assert.strictEqual(rpg.leaderboard()[0].name, 'neorion');
     await rpg.stop();
   });
 

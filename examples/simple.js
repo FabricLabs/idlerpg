@@ -12,6 +12,7 @@ const game = new IdleRPG({
 async function main () {
   game.on('tick', (tick) => console.log('[EXAMPLES:SIMPLE]', 'tick:', tick));
   game.on('message', (msg) => console.log('[EXAMPLES:SIMPLE]', '[MESSAGE]', msg.object));
+  game.on('error', (error) => console.error('[EXAMPLES:SIMPLE]', '[ERROR]', error));
 
   await game.start();
 

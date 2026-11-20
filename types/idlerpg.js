@@ -35,6 +35,7 @@ const {
   LEVEL_OFFSET_MAX,
   PRESENCE_SOURCES,
   RETENTION_DAYS,
+  PLAYER_LIST_DAYS,
   TEXT_PRESENCE_MS
 } = require('../constants');
 
@@ -44,6 +45,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const TOP_CREATURES = 5;
 const PLAYER_ID_BYTES = 8;
+const REPORT_DAYS = 30;
 
 /**
  * The remote account behind a namespaced user id: `<service>/users/<id>`
@@ -63,6 +65,10 @@ function accountOf (key) {
  */
 function accountKey (account) {
   return account.service ? `${account.service}/users/${account.id}` : account.id;
+}
+
+function isRecord (value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function dayKey (ms) {
@@ -149,7 +155,10 @@ class IdleRPG extends Service {
    * @param {boolean} [settings.penalties=true] Slash wealth for chatting in the
    *   announcement channels, or in a game channel when there are none.
    * @param {boolean} [settings.autostart=true] Run the tick clock on `start()`.
-   * @param {number} [settings.retentionDays=0] Day buckets kept (0 = keep all history).
+   * @param {number} [settings.retentionDays=400] Day buckets kept (0 = keep all history).
+   * @param {number} [settings.playerListDays=30] Days a bucket keeps which players it
+   *   counted (at least 30, which reports read); older buckets keep `playerCount`
+   *   only, so the save stops growing by a list per day (0 = keep every list).
    * @param {Function} [settings.now] Clock (tests).
    */
   constructor (settings = {}) {
@@ -158,6 +167,8 @@ class IdleRPG extends Service {
       name: 'idlerpg',
       path: 'stores/idlerpg',
       persistent: true,
+      // A failed Level read or write rejects instead of passing for an empty game or a save.
+      strict: true,
       networking: false
     }, rest));
 
@@ -179,6 +190,7 @@ class IdleRPG extends Service {
       penalties: true,
       autostart: true,
       retentionDays: RETENTION_DAYS,
+      playerListDays: PLAYER_LIST_DAYS,
       now: () => Date.now()
     }, this.settings, rest, {
       tickMs: Number(tickMs != null ? tickMs : (interval != null ? interval : TICK_INTERVAL))
@@ -195,7 +207,7 @@ class IdleRPG extends Service {
 
     this.worldClock = new WorldClock({ interval: this.settings.tickMs, now: this.settings.now });
     this.worldClock.on('tick', () => {
-      this.tick().catch((error) => this.emit('error', `[IDLERPG] tick: ${error && error.message ? error.message : error}`));
+      this.tick().catch((error) => this._fail(`[IDLERPG] tick: ${error && error.message ? error.message : error}`));
     });
     this._dirty = false;
 
@@ -245,18 +257,25 @@ class IdleRPG extends Service {
 
   async _restore () {
     if (!this.store) return;
-    let prior = null;
-    try { prior = await this.store.get(STORE_KEY); } catch (_) { prior = null; }
+    // A failed read must not start an empty game: the next save would overwrite the real one.
+    let prior = await this.store.get(STORE_KEY);
+    if (prior == null) return;
     if (typeof prior === 'string') {
-      try { prior = JSON.parse(prior); } catch (_) { prior = null; }
+      try { prior = JSON.parse(prior); } catch (error) { throw new Error(`[IDLERPG] the save at ${STORE_KEY} cannot be read: ${error.message}`); }
     }
-    if (!prior || typeof prior !== 'object') return;
+    if (!isRecord(prior)) throw new Error(`[IDLERPG] the save at ${STORE_KEY} is not a game`);
+    for (const field of ['users', 'players', 'channels', 'stats']) {
+      if (prior[field] != null && !isRecord(prior[field])) throw new Error(`[IDLERPG] the save at ${STORE_KEY} has a broken ${field}`);
+    }
     const content = this.content;
     content.users = prior.users || {};
     content.players = prior.players || {};
     content.channels = prior.channels || {};
-    content.stats = Object.assign(content.stats, prior.stats || {});
-    if (!content.stats.days) content.stats.days = {};
+    for (const [key, value] of Object.entries(prior.stats || {})) {
+      if (key !== '__proto__') content.stats[key] = value;
+    }
+    if (content.stats.days == null) content.stats.days = {};
+    else if (!isRecord(content.stats.days)) throw new Error(`[IDLERPG] the save at ${STORE_KEY} has a broken stats.days`);
     if (!content.stats.battles) content.stats.battles = { won: 0, lost: 0 };
     if (!content.stats.slain) content.stats.slain = {};
     // Nobody is known to be present after a restart until the host says so.
@@ -268,14 +287,31 @@ class IdleRPG extends Service {
     }
   }
 
+  /**
+   * Save the game. A failed save emits `error` and leaves the game unsaved.
+   * @returns {Promise<boolean>} Whether the Store now holds the current state.
+   */
   async _persist () {
-    if (!this.store || !this.store.db) return;
+    if (!this.store || !this.store.db) return true;
     this._dirty = false;
     try {
       await this.store.set(STORE_KEY, this.content);
+      return true;
     } catch (error) {
-      this.emit('error', `[IDLERPG] persist: ${error && error.message ? error.message : error}`);
+      this._dirty = true;
+      this._fail(`[IDLERPG] persist: ${error && error.message ? error.message : error}`);
+      return false;
     }
+  }
+
+  /**
+   * Report a failure. With no `error` listener an emit would throw, crashing
+   * the host or skipping a rollback, so it goes to `debug` instead.
+   * @param {string} message
+   */
+  _fail (message) {
+    if (this.listenerCount('error')) this.emit('error', message);
+    else this.emit('debug', message);
   }
 
   /**
@@ -317,6 +353,7 @@ class IdleRPG extends Service {
     }
     if (!legacy.length) return;
     for (const bucket of Object.values(content.stats.days || {})) {
+      if (!bucket || !bucket.players) continue;
       const counted = {};
       for (const key of Object.keys(bucket.players || {})) counted[this._accounts[key] || key] = 1;
       bucket.players = counted;
@@ -389,7 +426,7 @@ class IdleRPG extends Service {
 
     // A player present on several accounts is credited once.
     for (const user of this._presentUsers()) {
-      const player = this._player(user.id, user.name);
+      const player = this._player(user.id, user.name, user.nameRank);
       if (credited.has(player.id)) continue;
       credited.add(player.id);
       const record = new Player(player);
@@ -398,7 +435,7 @@ class IdleRPG extends Service {
       bucket.presentMs += this.settings.tickMs;
       bucket.players[player.id] = 1;
       stats.totalPresentMs += this.settings.tickMs;
-      if (outcome.leveled) this.announce(`${this._publicName(record)} has reached level ${outcome.level}!`);
+      if (outcome.leveled) this.announce(`${this._chatName(record)} has reached level ${outcome.level}!`);
       this._rollForEncounter(record, user);
       Object.assign(player, record.toObject());
     }
@@ -422,11 +459,21 @@ class IdleRPG extends Service {
   }
 
   _pruneDays (now) {
-    const retentionDays = Number(this.settings.retentionDays);
-    if (!(retentionDays > 0)) return;
-    const oldest = dayKey(now - (retentionDays - 1) * DAY_MS);
-    for (const key of Object.keys(this.content.stats.days)) {
-      if (key < oldest) delete this.content.stats.days[key];
+    const days = this.content.stats.days;
+    const retentionDays = this.settings.retentionDays == null ? RETENTION_DAYS : Number(this.settings.retentionDays);
+    if (retentionDays > 0) {
+      const oldest = dayKey(now - (retentionDays - 1) * DAY_MS);
+      for (const key of Object.keys(days)) {
+        if (key < oldest) delete days[key];
+      }
+    }
+    const listDays = this.settings.playerListDays == null ? PLAYER_LIST_DAYS : Number(this.settings.playerListDays);
+    if (!(listDays > 0)) return;
+    const listed = dayKey(now - (Math.max(listDays, REPORT_DAYS) - 1) * DAY_MS);
+    for (const [key, bucket] of Object.entries(days)) {
+      if (key >= listed || !bucket || !bucket.players) continue;
+      bucket.playerCount = Object.keys(bucket.players).length;
+      delete bucket.players;
     }
   }
 
@@ -471,7 +518,7 @@ class IdleRPG extends Service {
   }
 
   _applyEncounter (player, outcome) {
-    const name = this._publicName(player);
+    const name = this._chatName(player);
     const near = outcome.place ? ` near ${outcome.place.name}` : '';
     const stats = this.content.stats;
     const result = player.resolve(outcome);
@@ -518,18 +565,41 @@ class IdleRPG extends Service {
     });
   }
 
-  _user (id, name) {
+  /**
+   * Keep `name` when it is at least as authoritative as the one stored.
+   * A missing rank counts as 0, the same as a bare username, so callers
+   * that don't rank names still rename, and a home-server name (a higher
+   * rank) is not covered by one that arrives later.
+   * @param {Object} record User or player record.
+   * @param {string} name
+   * @param {number} [rank]
+   * @returns {boolean} Whether the stored name changed.
+   */
+  _keepName (record, name, rank) {
+    const known = name && name !== record.id ? String(name).trim() : '';
+    if (!known) return false;
+    const next = Number.isFinite(Number(rank)) ? Number(rank) : 0;
+    const has = record.name && record.name !== record.id;
+    const current = Number.isFinite(Number(record.nameRank)) ? Number(record.nameRank) : (has ? 0 : -1);
+    if (next < current) return false;
+    if (record.name === known && record.nameRank === next) return false;
+    record.name = known;
+    record.nameRank = next;
+    return true;
+  }
+
+  _user (id, name, rank) {
+    if (name != null && String(name).trim() === id) name = null;
     const users = this.content.users;
     if (!users[id]) {
-      users[id] = { id, name: name || id, presence: 'offline', channels: {}, since: null };
-    } else if (name && users[id].name !== name) {
-      users[id].name = name;
-    }
-    const player = this._playerOf(id);
-    if (name && name !== id && player && player.name !== name) {
-      player.name = name;
+      const known = name && name !== id ? String(name).trim() : '';
+      users[id] = { id, name: known || id, presence: 'offline', channels: {}, since: null };
+      if (known) users[id].nameRank = Number.isFinite(Number(rank)) ? Number(rank) : 0;
+    } else if (this._keepName(users[id], name, rank)) {
       this._dirty = true;
     }
+    const player = this._playerOf(id);
+    if (player && this._keepName(player, name, rank)) this._dirty = true;
     return users[id];
   }
 
@@ -573,17 +643,17 @@ class IdleRPG extends Service {
    * @param {string} [name] Display name; ignored when it is just the id.
    * @returns {Object} Stored player record.
    */
-  _player (key, name) {
+  _player (key, name, rank) {
     const known = name && name !== key ? name : null;
     let player = this._playerOf(key);
     if (!player) {
       const id = this._newPlayerId();
-      player = new Player({ id, name: known, accounts: [accountOf(key)], firstSeen: new Date(this.now).toISOString() }).toObject();
+      const nameRank = known ? (Number.isFinite(Number(rank)) ? Number(rank) : 0) : -1;
+      player = new Player({ id, name: known, nameRank, accounts: [accountOf(key)], firstSeen: new Date(this.now).toISOString() }).toObject();
       this.content.players[id] = player;
       this._accounts[key] = id;
       this._dirty = true;
-    } else if (known && player.name !== known) {
-      player.name = known;
+    } else if (this._keepName(player, known, rank)) {
       this._dirty = true;
     }
     return player;
@@ -636,18 +706,19 @@ class IdleRPG extends Service {
     }
     if (!wasPresent) {
       user.since = this.now;
-      const player = this._player(user.id, user.name);
+      const player = this._player(user.id, user.name, user.nameRank);
       if (!player.ticks) await this._welcomePlayer(player);
     }
     return user;
   }
 
   /**
-   * @param {Object} user `{ id, name?, online? }`
+   * @param {Object} user `{ id, name?, rank?, online? }` `rank` is how
+   *   authoritative `name` is; a lower rank never covers a higher one.
    */
   async _registerUser (user) {
     if (!user || !user.id) return null;
-    const record = this._user(user.id, user.name);
+    const record = this._user(user.id, user.name, user.rank);
     if (user.online === true || user.presence === 'online') await this._handlePresence({ user: user.id, status: 'online' });
     this._dirty = true;
     return record;
@@ -675,6 +746,16 @@ class IdleRPG extends Service {
   }
 
   /**
+   * Name safe to post in a channel: a nickname like `@everyone` or `<@&id>`
+   * must not ping anyone.
+   * @param {Object} player
+   * @returns {string}
+   */
+  _chatName (player) {
+    return this._publicName(player).replace(/@/g, '@\u200b').replace(/</g, '<\u200b');
+  }
+
+  /**
    * @param {Object} join `{ user, channel }`
    */
   async _handleJoin (join) {
@@ -698,19 +779,27 @@ class IdleRPG extends Service {
    */
   async _handlePresence (presence) {
     if (!presence || !presence.user) return null;
-    const user = this._user(presence.user);
     const channel = presence.channel || null;
     const sources = this._sources();
+    const known = Object.prototype.hasOwnProperty.call(this.content.users, presence.user) ? this.content.users[presence.user] : null;
+    // Only presence the game counts makes a record; everyone else the host sees is not kept.
+    if (presence.status === 'online') {
+      const counted = channel
+        ? sources.has('channel') && this._channelAllowed(channel)
+        : sources.has('status') && this._channelAllowed(null);
+      if (!counted) return known;
+    } else if (!known) {
+      return null;
+    }
+    const user = this._user(presence.user);
     const wasPresent = this._isPresent(user);
 
     if (presence.status === 'online') {
       if (channel) {
-        if (!sources.has('channel') || !this._channelAllowed(channel)) return user;
         this._channel({ id: channel });
         this.content.channels[channel].members[user.id] = 1;
         user.channels[channel] = 1;
       } else {
-        if (!sources.has('status') || !this._channelAllowed(null)) return user;
         user.status = 'online';
       }
     } else if (channel) {
@@ -751,7 +840,7 @@ class IdleRPG extends Service {
     const { notify } = record.penalize();
     Object.assign(player, record.toObject());
     this._dirty = true;
-    if (notify) this.announce(`${this._publicName(player)} has disrupted the peace!  Penalties have been applied, but life goes on.`);
+    if (notify) this.announce(`${this._chatName(player)} has disrupted the peace!  Penalties have been applied, but life goes on.`);
     return player;
   }
 
@@ -770,7 +859,7 @@ class IdleRPG extends Service {
   }
 
   async _welcomePlayer (player) {
-    this.announce(`Welcome to IdleRPG, ${this._publicName(player)}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
+    this.announce(`Welcome to IdleRPG, ${this._chatName(player)}.  The one rule — _no talking in this channel_ — is now in effect.  **Violators will be slashed.**  Best of luck!`);
   }
 
   _announcementTargets () {
@@ -809,7 +898,7 @@ class IdleRPG extends Service {
         if (!bucket) continue;
         presentMs += bucket.presentMs;
         peak = Math.max(peak, bucket.peak);
-        for (const id of Object.keys(bucket.players)) players.add(id);
+        for (const id of Object.keys(bucket.players || {})) players.add(id);
       }
       return { hours: round1(presentMs / HOUR_MS), players: players.size, peak };
     };
@@ -837,14 +926,15 @@ class IdleRPG extends Service {
       lastTick: stats.lastTick,
       startedAt: stats.startedAt,
       last7Days: window(7),
-      last30Days: window(30),
+      last30Days: window(REPORT_DAYS),
       battles: { won: battles.won, lost: battles.lost, total: battles.won + battles.lost },
       kills: battles.won,
       slain,
       levels,
-      history: windowDays(now, 30).reverse().map((day) => {
+      history: windowDays(now, REPORT_DAYS).reverse().map((day) => {
         const bucket = stats.days[day] || { presentMs: 0, peak: 0, players: {} };
-        return { day, hours: round1(bucket.presentMs / HOUR_MS), players: Object.keys(bucket.players).length, peak: bucket.peak };
+        const players = bucket.players ? Object.keys(bucket.players).length : (bucket.playerCount || 0);
+        return { day, hours: round1(bucket.presentMs / HOUR_MS), players, peak: bucket.peak };
       })
     };
   }
@@ -950,7 +1040,7 @@ class IdleRPG extends Service {
   }
 
   async _handleMemberlistRequest () {
-    const members = Object.values(this.content.players).filter((player) => !this._isBot(player)).map((player) => this._publicName(player));
+    const members = Object.values(this.content.players).filter((player) => !this._isBot(player)).map((player) => this._chatName(player));
     return `Current memberlist for the \`idlerpg\` plugin:\n\n\`\`\`\n${JSON.stringify(members, null, '  ')}\n\`\`\``;
   }
 
@@ -972,7 +1062,7 @@ class IdleRPG extends Service {
     const list = Object.values(this.content.players)
       .sort((a, b) => b.experience - a.experience)
       .slice(0, 10)
-      .map((player, n) => `${n + 1}. ${this._publicName(player)}, with **${player.experience}** experience`);
+      .map((player, n) => `${n + 1}. ${this._chatName(player)}, with **${player.experience}** experience`);
     return `Leaderboard:\n${list.join('\n')}`;
   }
 
@@ -988,23 +1078,34 @@ class IdleRPG extends Service {
     if (!actor) return `You have no wealth to transfer.`;
 
     const service = accountOf(message.actor).service;
+    const named = Object.values(this.content.players).filter((player) => player.name === targetName);
+    // Names are not unique: a name two players share names neither.
     const target = this._playerOf(targetName) ||
       (service ? this._playerOf(accountKey({ service, id: targetName })) : null) ||
-      Object.values(this.content.players).find((player) => player.name === targetName);
-    if (!target) return `Couldn't find ${targetName}.`;
+      (named.length === 1 ? named[0] : null);
+    // Never echo the target: it is user input and would post as written.
+    if (!target && named.length > 1) return `More than one player has that name.`;
+    if (!target) return `Couldn't find that player.`;
     if (target.id === actor.id) return `You cannot transfer money to yourself.`;
     if (actor.wealth - amount < 0) return `You do not have that amount.  You'll need **${amount - actor.wealth}** more <small>IDLE</small>.`;
 
     actor.wealth -= amount;
     target.wealth += amount;
     this._dirty = true;
-    await this._persist();
+    let saved = false;
+    try { saved = await this._persist(); } catch (_) { saved = false; }
+    if (!saved) {
+      // By difference: a tick may have paid either player while the save was pending.
+      actor.wealth += amount;
+      target.wealth -= amount;
+      return `The transfer could not be saved, so nothing was moved.  Try again later.`;
+    }
 
     // Whisper on the network the transfer came from when the target is there.
     const account = target.accounts.find((entry) => entry.service === service) || target.accounts[0];
     if (account) this.emit('whisper', {
       target: accountKey(account),
-      object: `${this._publicName(actor)} has transferred **${amount}** <small>IDLE</small> to your account!  Check your balance with \`!balance\`.`
+      object: `${this._chatName(actor)} has transferred **${amount}** <small>IDLE</small> to your account!  Check your balance with \`!balance\`.`
     });
 
     return `Balance transferred successfully!`;
