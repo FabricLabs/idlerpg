@@ -274,7 +274,8 @@ class IdleRPG extends Service {
     for (const [key, value] of Object.entries(prior.stats || {})) {
       if (key !== '__proto__') content.stats[key] = value;
     }
-    if (!content.stats.days) content.stats.days = {};
+    if (content.stats.days == null) content.stats.days = {};
+    else if (!isRecord(content.stats.days)) throw new Error(`[IDLERPG] the save at ${STORE_KEY} has a broken stats.days`);
     if (!content.stats.battles) content.stats.battles = { won: 0, lost: 0 };
     if (!content.stats.slain) content.stats.slain = {};
     // Nobody is known to be present after a restart until the host says so.

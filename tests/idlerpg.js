@@ -403,6 +403,12 @@ describe('IdleRPG', function () {
     await rpg.stop();
   });
 
+  it('will not start when day buckets are not a map', async function () {
+    const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });
+    rpg.store = { db: {}, get: async () => ({ stats: { days: 5 } }), set: async () => {} };
+    await assert.rejects(() => rpg.start(), /stats\.days/);
+  });
+
   it('will not start from a save that is not a game', async function () {
     for (const prior of ['{not json', '[1,2]', JSON.stringify({ users: [] })]) {
       const rpg = new IdleRPG({ persistent: false, autostart: false, verbosity: 0 });

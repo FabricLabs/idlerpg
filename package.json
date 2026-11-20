@@ -44,7 +44,7 @@
   },
   "homepage": "https://github.com/FabricLabs/idlerpg#readme",
   "dependencies": {
-    "@fabric/core": "FabricLabs/fabric#feature/schemas",
+    "@fabric/core": "FabricLabs/fabric#feature/testnet5",
     "@fabric/rpg": "FabricLabs/rpg#feature/passport"
   },
   "devDependencies": {
